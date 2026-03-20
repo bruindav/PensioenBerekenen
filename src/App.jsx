@@ -1,10 +1,12 @@
 // PENSIOEN PLANNER - src/App.jsx
-// v3: partner MPO import (namespace fix, Pensioen i.p.v. IndicatiefPensioen, naam+geboortedatum uit bestand)
+// v4: één universele import knop, auto-detectie eigenaar via naam/geboortedatum,
+//     fix "E is not a function" (PensioenRij buiten App component geplaatst),
+//     beide XML formaten (IndicatiefPensioen + Pensioen) en JSON ondersteund
 
 import { useState, useMemo, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
-const FIX_NR = "v3";
+const FIX_NR = "v4";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -51,96 +53,23 @@ const AOW_SAMEN = 1014;
 const AOW_ALLEEN = 1450;
 const JAAR_NU = new Date().getFullYear();
 
-// ─── XML helper: getElementsByTagName werkt ook met namespaces ────────────────
-function xmlTag(el, tag) {
-  return el.getElementsByTagName(tag);
-}
-function xmlText(el, tag) {
-  return el.getElementsByTagName(tag)[0]?.textContent?.trim() ?? "";
-}
-
-// ─── MPO XML parser (beide formaten) ─────────────────────────────────────────
-// Formaat A (jouw bestand):  OuderdomsPensioen > IndicatiefPensioen > HerkenningsNummer
-// Formaat B (partner):       OuderdomsPensioen > Pensioen > HerkenningsNummer
-function parseerMPOxml(xmlText, eigenaar) {
-  console.log("[MPO XML] Parseren voor:", eigenaar);
-  const doc = new DOMParser().parseFromString(xmlText, "application/xml");
-
-  // Naam en geboortedatum uit bestand halen
-  const naam = xmlText.includes("<Naam>") ? doc.getElementsByTagName("Naam")[0]?.textContent?.trim() : eigenaar;
-  const geboortedatumStr = doc.getElementsByTagName("Geboortedatum")[0]?.textContent?.trim();
-  const geboortejaar = geboortedatumStr ? parseInt(geboortedatumStr.split("-")[0]) : null;
-  console.log("[MPO XML] Naam:", naam, "| Geboortejaar:", geboortejaar);
-
-  const resultMap = {};
-  let aowOpgebouwdSamen = 0, aowOpgebouwdAlleen = 0;
-
-  const ouderdomsBlokken = xmlTag(doc, "OuderdomsPensioen");
-  console.log("[MPO XML] OuderdomsPensioen blokken:", ouderdomsBlokken.length);
-
-  for (let b = 0; b < ouderdomsBlokken.length; b++) {
-    const blok = ouderdomsBlokken[b];
-
-    // Startleeftijd: zoek <Van><Jaren> direct onder dit blok
-    const vanEl = xmlTag(blok, "Van")[0];
-    const startJaren = parseInt(vanEl ? xmlText(vanEl, "Jaren") || "67" : "67");
-
-    // AOW opbouw
-    const aowOpbouw = xmlTag(blok, "AOWDetailsOpbouw")[0];
-    if (aowOpbouw) {
-      const samen = parseInt(xmlText(aowOpbouw, "OpgebouwdSamenwonend") || "0");
-      if (samen > aowOpgebouwdSamen) {
-        aowOpgebouwdSamen = samen;
-        aowOpgebouwdAlleen = parseInt(xmlText(aowOpbouw, "OpgebouwdAlleenstaand") || "0");
-      }
-    }
-
-    // Probeer eerst IndicatiefPensioen (formaat A), dan Pensioen (formaat B)
-    let polissen = xmlTag(blok, "IndicatiefPensioen");
-    if (polissen.length === 0) polissen = xmlTag(blok, "Pensioen");
-    console.log("[MPO XML] Blok", b, "startJaren:", startJaren, "| polissen:", polissen.length);
-
-    for (let p = 0; p < polissen.length; p++) {
-      const pEl = polissen[p];
-      const herkenning = xmlText(pEl, "HerkenningsNummer");
-      if (!herkenning) continue;
-      const opgebouwd = parseInt(xmlText(pEl, "Opgebouwd") || "0");
-      const teBereiken = parseInt(xmlText(pEl, "TeBereiken") || "0");
-      const bedrag = opgebouwd || teBereiken;
-      const uitvoerder = xmlText(pEl, "PensioenUitvoerder") || "Onbekend";
-      const standPer = xmlText(pEl, "StandPer");
-      const key = `${eigenaar}:${herkenning}@${startJaren}`;
-
-      if (!resultMap[key]) {
-        resultMap[key] = { id: key, naam: uitvoerder, herkenning, eigenaar, type: "pensioen", bruto_jaar: bedrag, startLeeftijd: startJaren, standPer };
-        console.log("[MPO XML]  +", uitvoerder, herkenning, bedrag, "v.a.", startJaren);
-      }
-    }
-  }
-
-  // Dedupliceer: zelfde herkenning + zelfde bedrag → bewaar laagste startleeftijd
-  const seen = {};
-  const dedup = {};
-  Object.values(resultMap)
-    .sort((a, b) => a.startLeeftijd - b.startLeeftijd)
-    .forEach((p) => {
-      const base = `${p.eigenaar}:${p.herkenning}`;
-      if (!seen[base]) {
-        seen[base] = p.bruto_jaar;
-        dedup[p.id] = p;
-      } else if (p.bruto_jaar !== seen[base]) {
-        dedup[p.id] = p;
-        seen[base] = p.bruto_jaar;
-      }
-    });
-
-  console.log("[MPO XML] Resultaat:", Object.keys(dedup).length, "polissen | AOW samen:", aowOpgebouwdSamen);
-  return { pensioenen: Object.values(dedup), aow: { opgebouwdSamen: aowOpgebouwdSamen, opgebouwdAlleen: aowOpgebouwdAlleen }, naam, geboortejaar };
+// ─── Universele MPO parser ────────────────────────────────────────────────────
+// Herkent automatisch naam + geboortedatum uit het bestand
+// Ondersteunt JSON (IndicatiefPensioen) en XML (IndicatiefPensioen of Pensioen)
+function parseerBestand(inhoud, bestandsnaam) {
+  const isJSON = bestandsnaam.toLowerCase().endsWith(".json");
+  const isXML  = bestandsnaam.toLowerCase().endsWith(".xml");
+  if (!isJSON && !isXML) throw new Error("Gebruik .json of .xml van mijnpensioenoverzicht.nl");
+  return isJSON ? parseerJSON(inhoud) : parseerXML(inhoud);
 }
 
-// ─── MPO JSON parser ──────────────────────────────────────────────────────────
-function parseerMPO(data, eigenaar) {
-  console.log("[MPO JSON] Parseren voor:", eigenaar);
+function parseerJSON(tekst) {
+  const data = JSON.parse(tekst);
+
+  // Naam en geboortedatum zitten niet standaard in de JSON export — gebruik leeg
+  const naam = null;
+  const geboortejaar = null;
+
   const resultMap = {};
   const details = data?.Details?.OuderdomsPensioenDetails?.OuderdomsPensioen ?? [];
 
@@ -150,142 +79,231 @@ function parseerMPO(data, eigenaar) {
       const herkenning = p.HerkenningsNummer;
       if (!herkenning) return;
       const bedrag = p.Opgebouwd ?? p.TeBereiken ?? 0;
-      const key = `${eigenaar}:${herkenning}@${startJaren}`;
+      const key = `${herkenning}@${startJaren}`;
       if (!resultMap[key]) {
-        resultMap[key] = { id: key, naam: p.PensioenUitvoerder, herkenning, eigenaar, type: "pensioen", bruto_jaar: bedrag, startLeeftijd: startJaren, standPer: p.StandPer };
+        resultMap[key] = {
+          id: key, naam: p.PensioenUitvoerder, herkenning,
+          type: "pensioen", bruto_jaar: bedrag,
+          startLeeftijd: startJaren, standPer: p.StandPer,
+        };
       }
     });
   });
 
-  const seen = {};
-  const dedup = {};
-  Object.values(resultMap)
-    .sort((a, b) => a.startLeeftijd - b.startLeeftijd)
-    .forEach((p) => {
-      const base = `${p.eigenaar}:${p.herkenning}`;
-      if (!seen[base]) { seen[base] = p.bruto_jaar; dedup[p.id] = p; }
-      else if (p.bruto_jaar !== seen[base]) { dedup[p.id] = p; seen[base] = p.bruto_jaar; }
-    });
-
-  let aowOpgebouwdSamen = 0, aowOpgebouwdAlleen = 0;
+  let aowSamen = 0, aowAlleen = 0;
   details.forEach((blok) => {
     const a = blok.AOW?.AOWDetailsOpbouw;
-    if (a && a.OpgebouwdSamenwonend > aowOpgebouwdSamen) {
-      aowOpgebouwdSamen = a.OpgebouwdSamenwonend;
-      aowOpgebouwdAlleen = a.OpgebouwdAlleenstaand;
+    if (a && a.OpgebouwdSamenwonend > aowSamen) {
+      aowSamen = a.OpgebouwdSamenwonend;
+      aowAlleen = a.OpgebouwdAlleenstaand;
     }
   });
 
-  return { pensioenen: Object.values(dedup), aow: { opgebouwdSamen: aowOpgebouwdSamen, opgebouwdAlleen: aowOpgebouwdAlleen }, naam: null, geboortejaar: null };
+  return { pensioenen: dedup(resultMap), aow: { samen: aowSamen, alleen: aowAlleen }, naam, geboortejaar };
+}
+
+function parseerXML(tekst) {
+  const doc = new DOMParser().parseFromString(tekst, "application/xml");
+
+  // getElementsByTagName werkt ook als er een xmlns namespace is
+  const g = (el, tag) => el.getElementsByTagName(tag);
+  const t = (el, tag) => el.getElementsByTagName(tag)[0]?.textContent?.trim() ?? "";
+
+  // Naam en geboortedatum
+  const naam = t(doc, "Naam") || null;
+  const gbStr = t(doc, "Geboortedatum");
+  const geboortejaar = gbStr ? parseInt(gbStr.split("-")[0]) : null;
+
+  const resultMap = {};
+  let aowSamen = 0, aowAlleen = 0;
+
+  const blokken = g(doc, "OuderdomsPensioen");
+  for (let b = 0; b < blokken.length; b++) {
+    const blok = blokken[b];
+    const vanEl = g(blok, "Van")[0];
+    const startJaren = parseInt(vanEl ? t(vanEl, "Jaren") || "67" : "67");
+
+    // AOW
+    const aowEl = g(blok, "AOWDetailsOpbouw")[0];
+    if (aowEl) {
+      const s = parseInt(t(aowEl, "OpgebouwdSamenwonend") || "0");
+      if (s > aowSamen) {
+        aowSamen = s;
+        aowAlleen = parseInt(t(aowEl, "OpgebouwdAlleenstaand") || "0");
+      }
+    }
+
+    // Polissen: probeer IndicatiefPensioen, anders Pensioen
+    let polissen = g(blok, "IndicatiefPensioen");
+    if (polissen.length === 0) polissen = g(blok, "Pensioen");
+
+    for (let p = 0; p < polissen.length; p++) {
+      const pEl = polissen[p];
+      const herkenning = t(pEl, "HerkenningsNummer");
+      if (!herkenning) continue;
+      const opgebouwd  = parseInt(t(pEl, "Opgebouwd")  || "0");
+      const teBereiken = parseInt(t(pEl, "TeBereiken") || "0");
+      const key = `${herkenning}@${startJaren}`;
+      if (!resultMap[key]) {
+        resultMap[key] = {
+          id: key, naam: t(pEl, "PensioenUitvoerder") || "Onbekend", herkenning,
+          type: "pensioen", bruto_jaar: opgebouwd || teBereiken,
+          startLeeftijd: startJaren, standPer: t(pEl, "StandPer"),
+        };
+      }
+    }
+  }
+
+  return { pensioenen: dedup(resultMap), aow: { samen: aowSamen, alleen: aowAlleen }, naam, geboortejaar };
+}
+
+// Dedupliceer: zelfde herkenning + zelfde bedrag → bewaar laagste startleeftijd
+function dedup(resultMap) {
+  const seen = {};
+  const out  = {};
+  Object.values(resultMap)
+    .sort((a, b) => a.startLeeftijd - b.startLeeftijd)
+    .forEach((p) => {
+      if (!seen[p.herkenning]) {
+        seen[p.herkenning] = p.bruto_jaar;
+        out[p.id] = p;
+      } else if (p.bruto_jaar !== seen[p.herkenning]) {
+        out[p.id] = p;
+        seen[p.herkenning] = p.bruto_jaar;
+      }
+    });
+  return Object.values(out);
 }
 
 // ─── Default state ────────────────────────────────────────────────────────────
 const DEFAULT = {
-  pensioenen: [],
-  profiel: { geboortejaar: 1970, pensioenLeeftijd: 67, partnerGeboortejaar: 1972, partnerNaam: "", partnerPensioenLeeftijd: 67, heeftPartner: true, aowOpgebouwdSamen: 0, aowOpgebouwdAlleen: 0, partnerAowOpgebouwdSamen: 0 },
+  personen: [],   // [{ id, naam, geboortejaar, pensioenLeeftijd, isHoofd, aowSamen, aowAlleen }]
+  pensioenen: [], // [..., eigenaarId verwijst naar persoon.id]
   vermogen: { spaargeld: 0, spaargeldGebruikVanaf: 67, spaargeldPerJaar: 0, woningWaarde: 0, woningGebruikVanaf: 75, woningPerJaar: 0 },
   simulatie: { aankoopJaar: 0, aankoopBedrag: 10000, aankoopUitkering: 600 },
 };
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function PensioenApp() {
-  const [tab, setTab] = useState("profiel");
-  const [geladen, setGeladen] = useState(false);
+  const [tab, setTab]           = useState("profiel");
+  const [geladen, setGeladen]   = useState(false);
   const [opgeslagen, setOpgeslagen] = useState(null);
   const [importStatus, setImportStatus] = useState(null);
 
+  const [personen,   setPersonenRaw]   = useState(DEFAULT.personen);
   const [pensioenen, setPensioenenRaw] = useState(DEFAULT.pensioenen);
-  const [profiel, setProfielRaw] = useState(DEFAULT.profiel);
-  const [vermogen, setVermogenRaw] = useState(DEFAULT.vermogen);
-  const [simulatie, setSimulatieRaw] = useState(DEFAULT.simulatie);
+  const [vermogen,   setVermogenRaw]   = useState(DEFAULT.vermogen);
+  const [simulatie,  setSimulatieRaw]  = useState(DEFAULT.simulatie);
 
   useEffect(() => {
     (async () => {
       try {
         const saved = await dbGet("state");
         if (saved) {
+          if (saved.personen)   setPersonenRaw(saved.personen);
           if (saved.pensioenen) setPensioenenRaw(saved.pensioenen);
-          if (saved.profiel)   setProfielRaw(saved.profiel);
-          if (saved.vermogen)  setVermogenRaw(saved.vermogen);
-          if (saved.simulatie) setSimulatieRaw(saved.simulatie);
+          if (saved.vermogen)   setVermogenRaw(saved.vermogen);
+          if (saved.simulatie)  setSimulatieRaw(saved.simulatie);
         }
       } catch (e) { console.warn("Laden mislukt:", e); }
       setGeladen(true);
     })();
   }, []);
 
-  async function slaOp(p, pr, v, s) {
+  async function slaOp(pe, ps, v, s) {
     try {
-      await dbSet("state", { pensioenen: p, profiel: pr, vermogen: v, simulatie: s });
+      await dbSet("state", { personen: pe, pensioenen: ps, vermogen: v, simulatie: s });
       setOpgeslagen(new Date());
     } catch (e) { console.warn("Opslaan mislukt:", e); }
   }
-  function setPensioenen(v) { setPensioenenRaw(v);  slaOp(v, profiel, vermogen, simulatie); }
-  function setProfiel(v)    { setProfielRaw(v);     slaOp(pensioenen, v, vermogen, simulatie); }
-  function setVermogen(v)   { setVermogenRaw(v);    slaOp(pensioenen, profiel, v, simulatie); }
-  function setSimulatie(v)  { setSimulatieRaw(v);   slaOp(pensioenen, profiel, vermogen, v); }
+  function setPersonen(v)   { setPersonenRaw(v);   slaOp(v, pensioenen, vermogen, simulatie); }
+  function setPensioenen(v) { setPensioenenRaw(v); slaOp(personen, v, vermogen, simulatie); }
+  function setVermogen(v)   { setVermogenRaw(v);   slaOp(personen, pensioenen, v, simulatie); }
+  function setSimulatie(v)  { setSimulatieRaw(v);  slaOp(personen, pensioenen, vermogen, v); }
 
-  // ─── MPO import ──────────────────────────────────────────────────────────────
-  function importeerMPO(e, eigenaar) {
+  // ─── Import ─────────────────────────────────────────────────────────────────
+  function importeerBestand(e) {
     const file = e.target.files[0];
-    console.log("[MPO] Bestand:", file?.name, "| eigenaar:", eigenaar);
     if (!file) return;
     e.target.value = "";
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        let result;
-        const isJSON = file.name.toLowerCase().endsWith(".json");
-        const isXML  = file.name.toLowerCase().endsWith(".xml");
-        if (!isJSON && !isXML) {
-          setImportStatus({ ok: false, tekst: "Gebruik .json of .xml van mijnpensioenoverzicht.nl" });
-          return;
-        }
-        result = isJSON ? parseerMPO(JSON.parse(ev.target.result), eigenaar) : parseerMPOxml(ev.target.result, eigenaar);
+        const result = parseerBestand(ev.target.result, file.name);
 
         if (!result.pensioenen?.length) {
-          setImportStatus({ ok: false, tekst: `❌ Geen pensioenregelingen gevonden in dit bestand.` });
+          setImportStatus({ ok: false, tekst: "❌ Geen pensioenregelingen gevonden in dit bestand." });
           return;
         }
 
-        // Merge: verwijder bestaande polissen van dezelfde eigenaar, voeg nieuwe toe
-        const bestaand = pensioenen.filter(p => p.eigenaar !== eigenaar);
-        const nieuw = result.pensioenen.map((p, i) => ({ ...p, id: p.id || `${eigenaar}_${Date.now()}_${i}` }));
-        setPensioenen([...bestaand, ...nieuw]);
+        // Bepaal eigenaar: zoek bestaande persoon op naam of voeg nieuwe toe
+        let eigenaarId;
+        let nieuwePersonen = [...personen];
 
-        // Update profiel: AOW en evt. geboortejaar partner
-        let nieuwProfiel = { ...profiel };
-        if (eigenaar === "ikzelf" && result.aow.opgebouwdSamen > 0) {
-          nieuwProfiel = { ...nieuwProfiel, aowOpgebouwdSamen: result.aow.opgebouwdSamen, aowOpgebouwdAlleen: result.aow.opgebouwdAlleen };
+        if (result.naam) {
+          // XML bestand met naam erin — zoek of maak persoon
+          const bestaand = personen.find(p => p.naam === result.naam);
+          if (bestaand) {
+            eigenaarId = bestaand.id;
+            // Update geboortejaar als we dat nu weten
+            if (result.geboortejaar && !bestaand.geboortejaar) {
+              nieuwePersonen = nieuwePersonen.map(p => p.id === eigenaarId ? { ...p, geboortejaar: result.geboortejaar } : p);
+            }
+          } else {
+            eigenaarId = `persoon_${Date.now()}`;
+            const isHoofd = personen.length === 0;
+            nieuwePersonen = [...personen, {
+              id: eigenaarId,
+              naam: result.naam,
+              geboortejaar: result.geboortejaar ?? 1970,
+              pensioenLeeftijd: 67,
+              isHoofd,
+              aowSamen: result.aow.samen,
+              aowAlleen: result.aow.alleen,
+            }];
+          }
+        } else {
+          // JSON bestand zonder naam — gebruik eerste persoon of maak aan
+          if (personen.length === 0) {
+            eigenaarId = `persoon_${Date.now()}`;
+            nieuwePersonen = [{ id: eigenaarId, naam: "Ik", geboortejaar: 1970, pensioenLeeftijd: 67, isHoofd: true, aowSamen: result.aow.samen, aowAlleen: result.aow.alleen }];
+          } else {
+            // Koppel aan eerste persoon zonder pensioenen, of de hoofdpersoon
+            const zonderPensioen = personen.find(p => !pensioenen.some(x => x.eigenaarId === p.id));
+            eigenaarId = zonderPensioen?.id ?? personen[0].id;
+            nieuwePersonen = nieuwePersonen.map(p => p.id === eigenaarId
+              ? { ...p, aowSamen: result.aow.samen || p.aowSamen, aowAlleen: result.aow.alleen || p.aowAlleen }
+              : p);
+          }
         }
-        if (eigenaar === "partner") {
-          if (result.aow.opgebouwdSamen > 0) nieuwProfiel = { ...nieuwProfiel, partnerAowOpgebouwdSamen: result.aow.opgebouwdSamen };
-          if (result.geboortejaar) nieuwProfiel = { ...nieuwProfiel, partnerGeboortejaar: result.geboortejaar };
-          if (result.naam) nieuwProfiel = { ...nieuwProfiel, partnerNaam: result.naam };
-        }
-        setProfiel(nieuwProfiel);
 
-        const aowTekst = eigenaar === "ikzelf" && result.aow.opgebouwdSamen > 0
-          ? ` · AOW € ${result.aow.opgebouwdSamen.toLocaleString("nl-NL")}/jr`
-          : eigenaar === "partner" && result.aow.opgebouwdSamen > 0
-          ? ` · Partner AOW € ${result.aow.opgebouwdSamen.toLocaleString("nl-NL")}/jr`
-          : "";
-        const naamTekst = result.naam ? ` (${result.naam})` : "";
+        // Merge pensioenen: verwijder oude van deze eigenaar, voeg nieuwe toe
+        const bestaandePensioenen = pensioenen.filter(p => p.eigenaarId !== eigenaarId);
+        const nieuwePensioenen = result.pensioenen.map((p, i) => ({
+          ...p, id: `${eigenaarId}_${p.herkenning ?? i}_${p.startLeeftijd}`, eigenaarId,
+        }));
 
-        setImportStatus({ ok: true, tekst: `✅ ${nieuw.length} regelingen ingeladen voor ${eigenaar === "partner" ? "partner" + naamTekst : "jou"}${aowTekst}` });
+        setPersonen(nieuwePersonen);
+        setPensioenen([...bestaandePensioenen, ...nieuwePensioenen]);
+
+        const persoonNaam = nieuwePersonen.find(p => p.id === eigenaarId)?.naam ?? "onbekend";
+        setImportStatus({
+          ok: true,
+          tekst: `✅ ${nieuwePensioenen.length} regelingen ingeladen voor ${persoonNaam}${result.aow.samen > 0 ? ` · AOW € ${result.aow.samen.toLocaleString("nl-NL")}/jr` : ""}`,
+        });
         setTab("pensioenen");
       } catch (err) {
-        console.error("[MPO] Fout:", err);
-        setImportStatus({ ok: false, tekst: `❌ Fout: ${err.message}` });
+        console.error("[Import] Fout:", err);
+        setImportStatus({ ok: false, tekst: `❌ ${err.message}` });
       }
     };
     reader.onerror = () => setImportStatus({ ok: false, tekst: "❌ Kon bestand niet lezen" });
     reader.readAsText(file);
   }
 
-  // ─── Backup export / import ──────────────────────────────────────────────────
+  // ─── Backup ──────────────────────────────────────────────────────────────────
   function exporteer() {
-    const blob = new Blob([JSON.stringify({ pensioenen, profiel, vermogen, simulatie }, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ personen, pensioenen, vermogen, simulatie }, null, 2)], { type: "application/json" });
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
     a.download = `pensioen-backup-${new Date().toISOString().slice(0,10)}.json`; a.click();
   }
@@ -295,8 +313,8 @@ export default function PensioenApp() {
     reader.onload = (ev) => {
       try {
         const data = JSON.parse(ev.target.result);
+        if (data.personen)   setPersonen(data.personen);
         if (data.pensioenen) setPensioenen(data.pensioenen);
-        if (data.profiel)    setProfiel(data.profiel);
         if (data.vermogen)   setVermogen(data.vermogen);
         if (data.simulatie)  setSimulatie(data.simulatie);
         setImportStatus({ ok: true, tekst: "✅ Backup hersteld" });
@@ -306,65 +324,88 @@ export default function PensioenApp() {
   }
 
   // ─── Berekeningen ─────────────────────────────────────────────────────────────
-  const chartData = useMemo(() => {
-    return Array.from({ length: 26 }, (_, i) => {
-      const leeftijd = profiel.pensioenLeeftijd + i;
-      const jaar = JAAR_NU + (leeftijd - (JAAR_NU - profiel.geboortejaar));
-      const partnerLeeftijd = leeftijd + (profiel.geboortejaar - profiel.partnerGeboortejaar);
+  const hoofdpersoon = personen.find(p => p.isHoofd) ?? personen[0];
+  const startLeeftijd = hoofdpersoon?.pensioenLeeftijd ?? 67;
+  const startGeboortejaar = hoofdpersoon?.geboortejaar ?? 1970;
 
-      let pensioenEigen = 0, pensioenPartner = 0;
-      pensioenen.forEach((p) => {
-        if (p.eigenaar === "partner") {
-          if (partnerLeeftijd >= p.startLeeftijd) pensioenPartner += p.bruto_jaar ?? 0;
-        } else {
-          if (leeftijd >= p.startLeeftijd) {
+  const chartData = useMemo(() => {
+    if (!hoofdpersoon) return [];
+    return Array.from({ length: 26 }, (_, i) => {
+      const leeftijd = startLeeftijd + i;
+      const jaar = JAAR_NU + (leeftijd - (JAAR_NU - startGeboortejaar));
+
+      // Inkomen per persoon
+      let totaalPensioenBruto = 0;
+      const perPersoon = {};
+
+      personen.forEach((persoon) => {
+        const leeftijdPersoon = leeftijd + (startGeboortejaar - persoon.geboortejaar);
+        let pensioenBruto = 0;
+
+        pensioenen.filter(p => p.eigenaarId === persoon.id).forEach((p) => {
+          if (leeftijdPersoon >= p.startLeeftijd) {
             if (p.type === "bankspaar") {
               const r = (p.rente ?? 2) / 100;
-              pensioenEigen += r === 0 ? (p.saldo ?? 0) / 20 : ((p.saldo ?? 0) * r) / (1 - Math.pow(1 + r, -20));
+              pensioenBruto += r === 0 ? (p.saldo ?? 0) / 20 : ((p.saldo ?? 0) * r) / (1 - Math.pow(1 + r, -20));
             } else {
-              pensioenEigen += p.bruto_jaar ?? 0;
+              pensioenBruto += p.bruto_jaar ?? 0;
             }
           }
+        });
+
+        // Simulatie alleen voor hoofdpersoon
+        if (persoon.isHoofd && simulatie.aankoopJaar > 0 && leeftijd >= startLeeftijd + simulatie.aankoopJaar) {
+          pensioenBruto += simulatie.aankoopUitkering * 12;
         }
+
+        let aowBruto = 0;
+        if (leeftijdPersoon >= 67) {
+          aowBruto = personen.length > 1 ? (persoon.aowSamen || AOW_SAMEN * 12) : (persoon.aowAlleen || AOW_ALLEEN * 12);
+        }
+
+        perPersoon[persoon.id] = { pensioenBruto: Math.round(pensioenBruto), aowBruto: Math.round(aowBruto) };
+        totaalPensioenBruto += pensioenBruto;
       });
 
-      if (simulatie.aankoopJaar > 0 && leeftijd >= profiel.pensioenLeeftijd + simulatie.aankoopJaar) pensioenEigen += simulatie.aankoopUitkering * 12;
-
-      const aowEigen = profiel.aowOpgebouwdSamen > 0
-        ? (profiel.heeftPartner ? profiel.aowOpgebouwdSamen : profiel.aowOpgebouwdAlleen)
-        : (profiel.heeftPartner ? AOW_SAMEN * 12 : AOW_ALLEEN * 12);
-
-      let aowBruto = 0;
-      if (leeftijd >= 67) aowBruto += aowEigen;
-      if (profiel.heeftPartner && partnerLeeftijd >= 67) {
-        aowBruto += profiel.partnerAowOpgebouwdSamen > 0 ? profiel.partnerAowOpgebouwdSamen : AOW_SAMEN * 12;
-      }
-
+      const totaalAow = Object.values(perPersoon).reduce((s, p) => s + p.aowBruto, 0);
       const spaargeldInkomen = leeftijd >= vermogen.spaargeldGebruikVanaf ? vermogen.spaargeldPerJaar : 0;
       const woningInkomen    = leeftijd >= vermogen.woningGebruikVanaf    ? vermogen.woningPerJaar    : 0;
 
-      const pensioenBruto = Math.round(pensioenEigen + pensioenPartner);
-      const totalBruto = Math.round(pensioenBruto + aowBruto + spaargeldInkomen + woningInkomen);
-      const totalNetto = berekenNetto(pensioenEigen + aowBruto) + berekenNetto(pensioenPartner) + spaargeldInkomen + woningInkomen;
+      // Netto per persoon berekenen en optellen
+      const totaalNetto = personen.reduce((s, persoon) => {
+        const pp = perPersoon[persoon.id];
+        return s + berekenNetto(pp.pensioenBruto + pp.aowBruto);
+      }, 0) + spaargeldInkomen + woningInkomen;
 
-      return {
-        leeftijd, jaar, pensioenBruto, pensioenEigen: Math.round(pensioenEigen),
-        pensioenPartner: Math.round(pensioenPartner), aowBruto: Math.round(aowBruto),
-        spaargeldInkomen: Math.round(spaargeldInkomen), woningInkomen: Math.round(woningInkomen),
-        totalBruto, totalNetto: Math.round(totalNetto),
-        totalNettoMaand: Math.round(totalNetto / 12), totalBrutoMaand: Math.round(totalBruto / 12),
+      const totalBruto = Math.round(totaalPensioenBruto + totaalAow + spaargeldInkomen + woningInkomen);
+
+      const rij = {
+        leeftijd, jaar,
+        pensioenBruto: Math.round(totaalPensioenBruto),
+        aowBruto: Math.round(totaalAow),
+        spaargeldInkomen: Math.round(spaargeldInkomen),
+        woningInkomen: Math.round(woningInkomen),
+        totalBruto,
+        totalNetto: Math.round(totaalNetto),
+        totalNettoMaand: Math.round(totaalNetto / 12),
+        totalBrutoMaand: Math.round(totalBruto / 12),
       };
+      // Voeg per-persoon kolommen toe voor grafiek
+      personen.forEach(p => { rij[`pensioen_${p.id}`] = perPersoon[p.id].pensioenBruto; });
+      return rij;
     });
-  }, [pensioenen, profiel, vermogen, simulatie]);
+  }, [personen, pensioenen, vermogen, simulatie, hoofdpersoon]);
 
   const ps = chartData[0];
 
-  if (!geladen) return (
-    <div style={{ background: "#0f1923", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#c9a84c", fontFamily: "Georgia,serif", fontSize: 18 }}>Gegevens laden...</div>
-  );
+  // Kleuren per persoon
+  const KLEUREN = ["#c9a84c", "#a084c9", "#4caf8a", "#5b9bd5", "#e07b54"];
 
-  const eigenPensioenen  = pensioenen.filter(p => p.eigenaar !== "partner");
-  const partnerPensioenen = pensioenen.filter(p => p.eigenaar === "partner");
+  if (!geladen) return (
+    <div style={{ background: "#0f1923", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#c9a84c", fontFamily: "Georgia,serif", fontSize: 18 }}>
+      Gegevens laden...
+    </div>
+  );
 
   return (
     <div style={{ fontFamily: "'Georgia',serif", background: "#0f1923", minHeight: "100vh", color: "#e8dcc8" }}>
@@ -379,13 +420,9 @@ export default function PensioenApp() {
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           {opgeslagen && <span style={{ fontSize: 11, color: "#4caf8a" }}>✓ {opgeslagen.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}</span>}
-          <label style={{ ...btn("#5b9bd5"), cursor: "pointer" }} title="Jouw JSON of XML van mijnpensioenoverzicht.nl">
-            📥 Mijn overzicht
-            <input type="file" accept=".json,.xml" onChange={e => importeerMPO(e, "ikzelf")} style={{ display: "none" }} />
-          </label>
-          <label style={{ ...btn("#a084c9"), cursor: "pointer" }} title="XML of JSON van mijnpensioenoverzicht.nl van partner">
-            👫 Partner overzicht
-            <input type="file" accept=".json,.xml" onChange={e => importeerMPO(e, "partner")} style={{ display: "none" }} />
+          <label style={{ ...btn("#5b9bd5"), cursor: "pointer" }} title="JSON of XML van mijnpensioenoverzicht.nl — voor jezelf of je partner">
+            📥 Pensioen importeren
+            <input type="file" accept=".json,.xml" onChange={importeerBestand} style={{ display: "none" }} />
           </label>
           <button onClick={exporteer} style={btn("#c9a84c")}>⬇ Backup</button>
           <label style={{ ...btn("#7a9bb0"), cursor: "pointer" }}>
@@ -414,75 +451,85 @@ export default function PensioenApp() {
 
         {/* PROFIEL */}
         {tab === "profiel" && <Section title="Profiel">
-          <Grid>
-            <Field label="Jouw geboortejaar" value={profiel.geboortejaar} onChange={v => setProfiel({ ...profiel, geboortejaar: +v })} type="number" />
-            <Field label="Jouw pensioenleeftijd" value={profiel.pensioenLeeftijd} onChange={v => setProfiel({ ...profiel, pensioenLeeftijd: +v })} type="number" />
-          </Grid>
-          <div style={{ marginBottom: 16 }}>
-            <label style={lbl}><input type="checkbox" checked={profiel.heeftPartner} onChange={e => setProfiel({ ...profiel, heeftPartner: e.target.checked })} style={{ marginRight: 8 }} />Ik heb een partner</label>
-          </div>
-          {profiel.heeftPartner && <Grid>
-            <Field label={`Geboortejaar partner${profiel.partnerNaam ? ` (${profiel.partnerNaam})` : ""}`} value={profiel.partnerGeboortejaar} onChange={v => setProfiel({ ...profiel, partnerGeboortejaar: +v })} type="number" />
-            <Field label="Pensioenleeftijd partner" value={profiel.partnerPensioenLeeftijd} onChange={v => setProfiel({ ...profiel, partnerPensioenLeeftijd: +v })} type="number" />
-          </Grid>}
+          {personen.length === 0 && (
+            <div style={{ padding: 24, background: "#1a2d3d", borderRadius: 12, border: "1px solid #2a4a5e", textAlign: "center", marginBottom: 24 }}>
+              <p style={{ color: "#7a9bb0", margin: "0 0 12px" }}>Nog geen gegevens. Importeer je pensioenoverzicht om te beginnen.</p>
+              <label style={{ ...btn("#5b9bd5"), cursor: "pointer" }}>
+                📥 Pensioen importeren
+                <input type="file" accept=".json,.xml" onChange={importeerBestand} style={{ display: "none" }} />
+              </label>
+            </div>
+          )}
 
-          {/* AOW blokken */}
-          <div style={{ display: "grid", gridTemplateColumns: profiel.heeftPartner ? "1fr 1fr" : "1fr", gap: 16, marginBottom: 20 }}>
-            {profiel.aowOpgebouwdSamen > 0 && (
-              <div style={{ padding: 14, background: "#1a2d3d", borderRadius: 10, border: "1px solid #2a4a5e" }}>
-                <p style={{ margin: "0 0 10px", color: "#5b9bd5", fontSize: 12, fontWeight: 600 }}>AOW jij (opgebouwd)</p>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                  <KPI label="Samenwonend/jr" value={`€ ${profiel.aowOpgebouwdSamen.toLocaleString("nl-NL")}`} />
-                  <KPI label="Alleenstaand/jr" value={`€ ${profiel.aowOpgebouwdAlleen.toLocaleString("nl-NL")}`} />
+          {personen.map((persoon, pi) => (
+            <div key={persoon.id} style={{ background: "#1a2d3d", border: `1px solid ${KLEUREN[pi % KLEUREN.length]}44`, borderRadius: 12, padding: 18, marginBottom: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <h3 style={{ margin: 0, color: KLEUREN[pi % KLEUREN.length], fontSize: 15 }}>
+                  {persoon.isHoofd ? "👤" : "👥"} {persoon.naam}
+                  {persoon.isHoofd && <span style={{ fontSize: 11, color: "#555", marginLeft: 8 }}>hoofdpersoon</span>}
+                </h3>
+                {!persoon.isHoofd && (
+                  <button onClick={() => { setPersonen(personen.filter(p => p.id !== persoon.id)); setPensioenen(pensioenen.filter(p => p.eigenaarId !== persoon.id)); }}
+                    style={{ background: "#c0392b22", border: "1px solid #c0392b44", color: "#e74c3c", padding: "3px 9px", borderRadius: 6, cursor: "pointer" }}>✕</button>
+                )}
+              </div>
+              <Grid>
+                <Field label="Naam" value={persoon.naam} onChange={v => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, naam: v } : p))} />
+                <Field label="Geboortejaar" value={persoon.geboortejaar} onChange={v => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, geboortejaar: +v } : p))} type="number" />
+                <Field label="Pensioenleeftijd" value={persoon.pensioenLeeftijd} onChange={v => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, pensioenLeeftijd: +v } : p))} type="number" />
+              </Grid>
+              {persoon.aowSamen > 0 && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
+                  <KPI label="AOW samenwonend/jr" value={`€ ${persoon.aowSamen.toLocaleString("nl-NL")}`} kleur={KLEUREN[pi % KLEUREN.length]} />
+                  <KPI label="AOW alleenstaand/jr" value={`€ ${persoon.aowAlleen.toLocaleString("nl-NL")}`} kleur={KLEUREN[pi % KLEUREN.length]} />
                 </div>
-              </div>
-            )}
-            {profiel.heeftPartner && profiel.partnerAowOpgebouwdSamen > 0 && (
-              <div style={{ padding: 14, background: "#1a2d3d", borderRadius: 10, border: "1px solid #3a2a5e" }}>
-                <p style={{ margin: "0 0 10px", color: "#a084c9", fontSize: 12, fontWeight: 600 }}>AOW partner (opgebouwd)</p>
-                <KPI label="Samenwonend/jr" value={`€ ${profiel.partnerAowOpgebouwdSamen.toLocaleString("nl-NL")}`} />
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          ))}
 
-          <div style={{ padding: 20, background: "#1a2d3d", borderRadius: 12, border: "1px solid #2a4a5e" }}>
-            <h3 style={{ margin: "0 0 14px", color: "#c9a84c", fontSize: 14 }}>📊 Huishouden bij pensionering (jouw leeftijd {profiel.pensioenLeeftijd})</h3>
-            {ps && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(155px,1fr))", gap: 12 }}>
-              <KPI label="Bruto/maand" value={`€ ${ps.totalBrutoMaand.toLocaleString("nl-NL")}`} />
-              <KPI label="Netto/maand" value={`€ ${ps.totalNettoMaand.toLocaleString("nl-NL")}`} accent />
-              <KPI label="Jouw pensioen/jr" value={`€ ${ps.pensioenEigen.toLocaleString("nl-NL")}`} />
-              <KPI label="Partner pensioen/jr" value={`€ ${ps.pensioenPartner.toLocaleString("nl-NL")}`} partner />
-              <KPI label="AOW totaal/jr" value={`€ ${ps.aowBruto.toLocaleString("nl-NL")}`} />
-            </div>}
-          </div>
+          {/* Samenvatting */}
+          {ps && hoofdpersoon && (
+            <div style={{ padding: 20, background: "#1a2d3d", borderRadius: 12, border: "1px solid #2a4a5e", marginTop: 8 }}>
+              <h3 style={{ margin: "0 0 14px", color: "#c9a84c", fontSize: 14 }}>📊 Bij pensionering (leeftijd {hoofdpersoon.pensioenLeeftijd})</h3>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(155px,1fr))", gap: 12 }}>
+                <KPI label="Bruto/maand" value={`€ ${ps.totalBrutoMaand.toLocaleString("nl-NL")}`} kleur="#c9a84c" />
+                <KPI label="Netto/maand" value={`€ ${ps.totalNettoMaand.toLocaleString("nl-NL")}`} kleur="#4caf8a" />
+                <KPI label="Pensioen bruto/jr" value={`€ ${ps.pensioenBruto.toLocaleString("nl-NL")}`} kleur="#c9a84c" />
+                <KPI label="AOW bruto/jr" value={`€ ${ps.aowBruto.toLocaleString("nl-NL")}`} kleur="#5b9bd5" />
+              </div>
+            </div>
+          )}
         </Section>}
 
         {/* PENSIOENEN */}
         {tab === "pensioenen" && <Section title="Pensioenen & producten">
-          <div style={{ padding: 14, background: "#1a2d3d", borderRadius: 10, border: "1px solid #2a4a5e", marginBottom: 20 }}>
-            <p style={{ margin: 0, color: "#7a9bb0", fontSize: 13 }}>
-              Gebruik <strong style={{ color: "#5b9bd5" }}>📥 Mijn overzicht</strong> voor jouw bestand en <strong style={{ color: "#a084c9" }}>👫 Partner overzicht</strong> voor het bestand van je partner.
-            </p>
+          <div style={{ padding: 12, background: "#1a2d3d", borderRadius: 10, border: "1px solid #2a4a5e", marginBottom: 20 }}>
+            <p style={{ margin: 0, color: "#7a9bb0", fontSize: 13 }}>📥 Importeer elk pensioenoverzicht afzonderlijk. De app herkent automatisch van wie het bestand is.</p>
           </div>
 
-          {/* Eigen pensioenen */}
-          <h3 style={{ color: "#5b9bd5", fontSize: 14, marginBottom: 12 }}>👤 Jouw pensioenen</h3>
-          {eigenPensioenen.length === 0
-            ? <div style={{ padding: 20, color: "#4a6a7e", fontSize: 13, textAlign: "center" }}>Nog leeg — importeer jouw mijnpensioenoverzicht</div>
-            : eigenPensioenen.map((p, i) => <PensioenRij key={p.id} p={p} i={i} alle={pensioenen} setPensioenen={setPensioenen} />)
+          {personen.length === 0
+            ? <div style={{ textAlign: "center", padding: 40, color: "#4a6a7e" }}>Nog geen pensioenen. Importeer een bestand.</div>
+            : personen.map((persoon, pi) => {
+                const eigenPensioenen = pensioenen.filter(p => p.eigenaarId === persoon.id);
+                return (
+                  <div key={persoon.id} style={{ marginBottom: 28 }}>
+                    <h3 style={{ color: KLEUREN[pi % KLEUREN.length], fontSize: 14, marginBottom: 12 }}>
+                      {persoon.isHoofd ? "👤" : "👥"} {persoon.naam}
+                    </h3>
+                    {eigenPensioenen.length === 0
+                      ? <div style={{ padding: 16, color: "#4a6a7e", fontSize: 13, textAlign: "center" }}>Geen pensioenen — importeer het overzicht van {persoon.naam}</div>
+                      : eigenPensioenen.map((p) => (
+                          <PensioenRij key={p.id} p={p} alle={pensioenen} setPensioenen={setPensioenen} kleur={KLEUREN[pi % KLEUREN.length]} />
+                        ))
+                    }
+                  </div>
+                );
+              })
           }
-
-          {/* Partner pensioenen */}
-          {profiel.heeftPartner && <>
-            <h3 style={{ color: "#a084c9", fontSize: 14, marginBottom: 12, marginTop: 24 }}>👫 Partner pensioenen {profiel.partnerNaam ? `(${profiel.partnerNaam})` : ""}</h3>
-            {partnerPensioenen.length === 0
-              ? <div style={{ padding: 20, color: "#4a6a7e", fontSize: 13, textAlign: "center" }}>Nog leeg — importeer het mijnpensioenoverzicht van je partner</div>
-              : partnerPensioenen.map((p, i) => <PensioenRij key={p.id} p={p} i={i} alle={pensioenen} setPensioenen={setPensioenen} partner />)
-            }
-          </>}
-
-          <button onClick={() => setPensioenen([...pensioenen, { id: Date.now(), naam: "Nieuw pensioen", type: "pensioen", eigenaar: "ikzelf", bruto_jaar: 0, startLeeftijd: 67 }])}
-            style={{ background: "#c9a84c22", border: "1px solid #c9a84c44", color: "#c9a84c", padding: "9px 18px", borderRadius: 8, cursor: "pointer", fontSize: 13, marginTop: 16 }}>
+          <button onClick={() => {
+            const eigenaarId = hoofdpersoon?.id ?? "onbekend";
+            setPensioenen([...pensioenen, { id: `handmatig_${Date.now()}`, naam: "Nieuw pensioen", type: "pensioen", eigenaarId, bruto_jaar: 0, startLeeftijd: 67 }]);
+          }} style={{ background: "#c9a84c22", border: "1px solid #c9a84c44", color: "#c9a84c", padding: "9px 18px", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>
             + Handmatig toevoegen
           </button>
         </Section>}
@@ -510,28 +557,29 @@ export default function PensioenApp() {
             <Field label="Aankoopbedrag (€)" value={simulatie.aankoopBedrag} onChange={v=>setSimulatie({...simulatie,aankoopBedrag:+v})} type="number" />
             <Field label="Extra uitkering per maand (€)" value={simulatie.aankoopUitkering} onChange={v=>setSimulatie({...simulatie,aankoopUitkering:+v})} type="number" />
           </Grid>
-          {simulatie.aankoopJaar > 0 && (
+          {simulatie.aankoopJaar > 0 && hoofdpersoon && (
             <div style={{ padding: 14, background: "#1a2d3d", borderRadius: 10, border: "1px solid #2a4a5e" }}>
-              <p style={{ margin: 0, color: "#c9a84c" }}>Vanaf leeftijd <strong>{profiel.pensioenLeeftijd + simulatie.aankoopJaar}</strong> extra <strong>€ {(simulatie.aankoopUitkering * 12).toLocaleString("nl-NL")}</strong>/jr bruto.</p>
+              <p style={{ margin: 0, color: "#c9a84c" }}>Vanaf leeftijd <strong>{hoofdpersoon.pensioenLeeftijd + simulatie.aankoopJaar}</strong> extra <strong>€ {(simulatie.aankoopUitkering * 12).toLocaleString("nl-NL")}</strong>/jr bruto.</p>
             </div>
           )}
         </Section>}
 
         {/* PROGNOSE */}
-        {tab === "prognose" && <Section title="Inkomensprognose huishouden">
-          <p style={{ color: "#7a9bb0", fontSize: 12, marginBottom: 18 }}>Gecombineerd inkomen over 25 jaar. Netto o.b.v. box 1 schijven 2024.</p>
+        {tab === "prognose" && <Section title="Inkomensprognose">
+          <p style={{ color: "#7a9bb0", fontSize: 12, marginBottom: 18 }}>Gecombineerd huishoudinkomen. Netto o.b.v. box 1 schijven 2024.</p>
           <div style={{ background: "#1a2d3d", borderRadius: 12, padding: 18, marginBottom: 20 }}>
             <ResponsiveContainer width="100%" height={260}>
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#2a4a5e" />
                 <XAxis dataKey="leeftijd" stroke="#7a9bb0" tick={{ fontSize: 11 }} />
                 <YAxis stroke="#7a9bb0" tick={{ fontSize: 11 }} tickFormatter={v=>`€${(v/1000).toFixed(0)}k`} />
-                <Tooltip formatter={v=>[`€ ${v.toLocaleString("nl-NL")}`]} labelFormatter={l=>`Leeftijd ${l}`} contentStyle={{ background: "#0f1923", border: "1px solid #2a4a5e", borderRadius: 8, fontSize: 12 }} />
+                <Tooltip formatter={v=>[`€ ${Number(v).toLocaleString("nl-NL")}`]} labelFormatter={l=>`Leeftijd ${l}`} contentStyle={{ background: "#0f1923", border: "1px solid #2a4a5e", borderRadius: 8, fontSize: 12 }} />
                 <Legend />
-                <Line type="monotone" dataKey="totalBruto" name="Bruto" stroke="#c9a84c" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="totalNetto" name="Netto" stroke="#4caf8a" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="aowBruto" name="AOW" stroke="#5b9bd5" strokeWidth={1} dot={false} strokeDasharray="4 2" />
-                <Line type="monotone" dataKey="pensioenPartner" name="Partner pensioen" stroke="#a084c9" strokeWidth={1} dot={false} strokeDasharray="4 2" />
+                <Line type="monotone" dataKey="totalBruto" name="Bruto totaal" stroke="#c9a84c" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="totalNetto" name="Netto totaal" stroke="#4caf8a" strokeWidth={2} dot={false} />
+                {personen.map((p, pi) => (
+                  <Line key={p.id} type="monotone" dataKey={`pensioen_${p.id}`} name={`Pensioen ${p.naam}`} stroke={KLEUREN[pi % KLEUREN.length]} strokeWidth={1} dot={false} strokeDasharray="4 2" />
+                ))}
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -539,7 +587,7 @@ export default function PensioenApp() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
                 <tr style={{ background: "#1a2d3d" }}>
-                  {["Lft","Jaar","Eigen pens/jr","Partner pens/jr","AOW/jr","Spaar/jr","Woning/jr","Bruto/mnd","Netto/mnd"].map(h=>(
+                  {["Lft","Jaar","Pensioen/jr","AOW/jr","Spaar/jr","Woning/jr","Bruto/mnd","Netto/mnd"].map(h=>(
                     <th key={h} style={{ padding: "8px 10px", textAlign: "right", color: "#c9a84c", borderBottom: "1px solid #2a4a5e", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -549,8 +597,7 @@ export default function PensioenApp() {
                   <tr key={i} style={{ background: i%2===0?"#111d26":"#0f1923" }}>
                     <td style={{ ...cel, color: "#e8dcc8", fontWeight:600 }}>{r.leeftijd}</td>
                     <td style={cel}>{r.jaar}</td>
-                    <td style={cel}>€ {r.pensioenEigen.toLocaleString("nl-NL")}</td>
-                    <td style={{ ...cel, color: "#a084c9" }}>€ {r.pensioenPartner.toLocaleString("nl-NL")}</td>
+                    <td style={cel}>€ {r.pensioenBruto.toLocaleString("nl-NL")}</td>
                     <td style={cel}>€ {r.aowBruto.toLocaleString("nl-NL")}</td>
                     <td style={cel}>€ {r.spaargeldInkomen.toLocaleString("nl-NL")}</td>
                     <td style={cel}>€ {r.woningInkomen.toLocaleString("nl-NL")}</td>
@@ -567,57 +614,57 @@ export default function PensioenApp() {
   );
 }
 
-// ─── PensioenRij component ────────────────────────────────────────────────────
-function PensioenRij({ p, alle, setPensioenen, partner }) {
-  const idx = alle.findIndex(x => x.id === p.id);
-  const kleur = partner ? "#a084c9" : "#5b9bd5";
+// ─── PensioenRij — buiten App zodat React hem niet opnieuw definieert ─────────
+function PensioenRij({ p, alle, setPensioenen, kleur }) {
+  function update(veld, waarde) {
+    setPensioenen(alle.map(x => x.id === p.id ? { ...x, [veld]: waarde } : x));
+  }
   return (
-    <div style={{ background: "#1a2d3d", border: `1px solid ${kleur}33`, borderRadius: 12, padding: 16, marginBottom: 10 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+    <div style={{ background: "#111d26", border: `1px solid ${kleur}33`, borderRadius: 10, padding: 14, marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
         <div style={{ flex: 1 }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 3 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 2 }}>
             <span>{p.type === "bankspaar" ? "🏦" : p.type === "lijfrente" ? "📋" : "🏛️"}</span>
-            <input value={p.naam} onChange={e=>{const n=[...alle];n[idx]={...n[idx],naam:e.target.value};setPensioenen(n);}} style={{ ...inp, maxWidth: 280 }} />
+            <input value={p.naam} onChange={e => update("naam", e.target.value)} style={{ ...inp, maxWidth: 280 }} />
           </div>
           {p.herkenning && <div style={{ fontSize: 11, color: "#4a6a7e", marginLeft: 24 }}>#{p.herkenning}{p.standPer ? ` · ${p.standPer}` : ""}</div>}
         </div>
-        <button onClick={() => setPensioenen(alle.filter(x=>x.id!==p.id))} style={{ background: "#c0392b22", border: "1px solid #c0392b44", color: "#e74c3c", padding: "3px 9px", borderRadius: 6, cursor: "pointer", marginLeft: 10 }}>✕</button>
+        <button onClick={() => setPensioenen(alle.filter(x => x.id !== p.id))} style={{ background: "#c0392b22", border: "1px solid #c0392b44", color: "#e74c3c", padding: "3px 9px", borderRadius: 6, cursor: "pointer", marginLeft: 10 }}>✕</button>
       </div>
       <Grid>
         <div>
           <label style={lbl}>Type</label>
-          <select value={p.type} onChange={e=>{const n=[...alle];n[idx]={...n[idx],type:e.target.value};setPensioenen(n);}} style={inp}>
+          <select value={p.type} onChange={e => update("type", e.target.value)} style={inp}>
             <option value="pensioen">Pensioenfonds</option>
             <option value="bankspaar">Bankspaarrekening</option>
             <option value="lijfrente">Lijfrente</option>
           </select>
         </div>
-        <Field label="Startleeftijd" value={p.startLeeftijd} onChange={v=>{const n=[...alle];n[idx]={...n[idx],startLeeftijd:+v};setPensioenen(n);}} type="number" />
-        {p.type === "bankspaar" ? <>
-          <Field label="Saldo (€)" value={p.saldo??0} onChange={v=>{const n=[...alle];n[idx]={...n[idx],saldo:+v};setPensioenen(n);}} type="number" />
-          <Field label="Rente (%)" value={p.rente??2} onChange={v=>{const n=[...alle];n[idx]={...n[idx],rente:+v};setPensioenen(n);}} type="number" />
-        </> : <Field label="Bruto/jr (€)" value={p.bruto_jaar??0} onChange={v=>{const n=[...alle];n[idx]={...n[idx],bruto_jaar:+v};setPensioenen(n);}} type="number" />}
+        <Field label="Startleeftijd" value={p.startLeeftijd} onChange={v => update("startLeeftijd", +v)} type="number" />
+        {p.type === "bankspaar"
+          ? <><Field label="Saldo (€)" value={p.saldo??0} onChange={v => update("saldo", +v)} type="number" /><Field label="Rente (%)" value={p.rente??2} onChange={v => update("rente", +v)} type="number" /></>
+          : <Field label="Bruto/jr (€)" value={p.bruto_jaar??0} onChange={v => update("bruto_jaar", +v)} type="number" />
+        }
       </Grid>
     </div>
   );
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── Herbruikbare componenten ─────────────────────────────────────────────────
 function Section({ title, children }) {
   return <div><h2 style={{ color: "#c9a84c", fontSize: 18, marginBottom: 20, paddingBottom: 10, borderBottom: "1px solid #2a4a5e" }}>{title}</h2>{children}</div>;
 }
 function Grid({ children }) {
   return <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(185px,1fr))", gap: 12, marginBottom: 12 }}>{children}</div>;
 }
-function Field({ label, value, onChange, type="text" }) {
-  return <div><label style={lbl}>{label}</label><input type={type} value={value} onChange={e=>onChange(e.target.value)} style={inp} /></div>;
+function Field({ label, value, onChange, type = "text" }) {
+  return <div><label style={lbl}>{label}</label><input type={type} value={value} onChange={e => onChange(e.target.value)} style={inp} /></div>;
 }
-function KPI({ label, value, accent, partner }) {
-  const kleur = accent ? "#4caf8a" : partner ? "#a084c9" : "#c9a84c";
+function KPI({ label, value, kleur }) {
   return (
-    <div style={{ background: "#111d26", borderRadius: 8, padding: "10px 14px", border: `1px solid ${kleur}44` }}>
+    <div style={{ background: "#0f1923", borderRadius: 8, padding: "10px 14px", border: `1px solid ${kleur}44` }}>
       <div style={{ fontSize: 11, color: "#7a9bb0", marginBottom: 3 }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 700, color: kleur }}>{value}</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: kleur }}>{value}</div>
     </div>
   );
 }
