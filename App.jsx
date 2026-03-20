@@ -1,31 +1,31 @@
 // PENSIOEN PLANNER - src/App.jsx
-// v6: prognose start op jouw pensioendatum, partner-pensioenleeftijd vrij instelbaar,
-//     inkomensstappen zichtbaar in grafiek en tabel (jij met pensioen / partner met pensioen),
-//     AOW-tarief dynamisch op basis van werkelijke leeftijden per jaar
+// v10: spaargeld en woning zichtbaar in uitklapbare tijdlijn,
+//      duidelijk gelabeld als "netto" (geen belasting berekend over deze bedragen),
+//      apart blok per bron in de uitklap
 
 import { useState, useMemo, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "v6";
+const FIX_NR = "v10";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
-const STORE = "gegevens";
+const STORE   = "gegevens";
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 1);
     req.onupgradeneeded = (e) => e.target.result.createObjectStore(STORE);
     req.onsuccess = (e) => resolve(e.target.result);
-    req.onerror = () => reject(req.error);
+    req.onerror   = () => reject(req.error);
   });
 }
 async function dbGet(key) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readonly");
+    const tx  = db.transaction(STORE, "readonly");
     const req = tx.objectStore(STORE).get(key);
     req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onerror   = () => reject(req.error);
   });
 }
 async function dbSet(key, value) {
@@ -34,7 +34,7 @@ async function dbSet(key, value) {
     const tx = db.transaction(STORE, "readwrite");
     tx.objectStore(STORE).put(value, key);
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror    = () => reject(tx.error);
   });
 }
 
@@ -43,38 +43,40 @@ function berekenNetto(bruto) {
   if (bruto <= 0) return 0;
   const schijf1 = Math.min(bruto, 75518);
   const schijf2 = Math.max(0, bruto - 75518);
-  let belasting = schijf1 * 0.3697 + schijf2 * 0.495;
+  let bel = schijf1 * 0.3697 + schijf2 * 0.495;
   const ahk = bruto < 24812 ? 3362 : Math.max(0, 3362 - (bruto - 24812) * 0.06095);
-  belasting = Math.max(0, belasting - ahk - 1982);
-  return Math.round(bruto - belasting);
+  bel = Math.max(0, bel - ahk - 1982);
+  return Math.round(bruto - bel);
 }
 
 const AOW_SAMEN_MND  = 1014;
 const AOW_ALLEEN_MND = 1450;
-const JAAR_NU = new Date().getFullYear();
+const JAAR_NU        = new Date().getFullYear();
 
-// ─── Parsers ──────────────────────────────────────────────────────────────────
-function parseerBestand(inhoud, bestandsnaam) {
-  const isJSON = bestandsnaam.toLowerCase().endsWith(".json");
-  const isXML  = bestandsnaam.toLowerCase().endsWith(".xml");
-  if (!isJSON && !isXML) throw new Error("Gebruik .json of .xml van mijnpensioenoverzicht.nl");
-  return isJSON ? parseerJSON(inhoud) : parseerXML(inhoud);
-}
-
+// ─── Parsers (ongewijzigd t.o.v. v9) ─────────────────────────────────────────
 function parseerJSON(tekst) {
-  const data = JSON.parse(tekst);
-  const resultMap = {};
+  const data    = JSON.parse(tekst);
   const details = data?.Details?.OuderdomsPensioenDetails?.OuderdomsPensioen ?? [];
+  const polisFirstSeen = {}, polisLastSeen = {};
   details.forEach((blok) => {
-    const jaren   = blok.Van?.Leeftijd?.Jaren   ?? 67;
-    const maanden = blok.Van?.Leeftijd?.Maanden ?? 0;
-    const startLeeftijd = jaren + maanden / 12;
+    const startLft = (blok.Van?.Leeftijd?.Jaren ?? 67) + (blok.Van?.Leeftijd?.Maanden ?? 0) / 12;
+    const isLevenslang = !!blok.Tot?.OuderdomsPensioenEvent;
     (blok.IndicatiefPensioen ?? []).forEach((p) => {
       const h = p.HerkenningsNummer; if (!h) return;
-      const key = `${h}@${startLeeftijd}`;
-      if (!resultMap[key]) resultMap[key] = { id: key, naam: p.PensioenUitvoerder, herkenning: h, type: "pensioen", bruto_jaar: p.Opgebouwd ?? p.TeBereiken ?? 0, startLeeftijd, standPer: p.StandPer };
+      if (!polisFirstSeen[h]) polisFirstSeen[h] = { startLft, naam: p.PensioenUitvoerder, standPer: p.StandPer };
+      polisLastSeen[h] = { bedrag: p.Opgebouwd ?? p.TeBereiken ?? 0, isLevenslang, blok };
     });
   });
+  const polissen = Object.keys(polisFirstSeen).map(h => ({
+    id: `${h}@${polisFirstSeen[h].startLft}`, naam: polisFirstSeen[h].naam, herkenning: h, type: "pensioen",
+    bruto_jaar: polisLastSeen[h].bedrag, startLeeftijd: polisFirstSeen[h].startLft,
+    totLeeftijd: polisLastSeen[h].isLevenslang ? null : (() => {
+      const lb = [...details].reverse().find(b => (b.IndicatiefPensioen ?? []).some(p => p.HerkenningsNummer === h));
+      const tot = lb?.Tot?.Leeftijd;
+      return tot ? tot.Jaren + (tot.Maanden ?? 0) / 12 : null;
+    })(),
+    standPer: polisFirstSeen[h].standPer,
+  }));
   let aowSamen = 0, aowAlleen = 0, aowStart = 67.25;
   details.forEach((blok) => {
     const a = blok.AOW?.AOWDetailsOpbouw;
@@ -83,7 +85,7 @@ function parseerJSON(tekst) {
       aowStart = (blok.Van?.Leeftijd?.Jaren ?? 67) + (blok.Van?.Leeftijd?.Maanden ?? 0) / 12;
     }
   });
-  return { pensioenen: dedupPolissen(resultMap), aow: { samen: aowSamen, alleen: aowAlleen, startLeeftijd: aowStart }, naam: null, geboortejaar: null };
+  return { pensioenen: polissen, aow: { samen: aowSamen, alleen: aowAlleen, startLeeftijd: aowStart }, naam: null, geboortejaar: null };
 }
 
 function parseerXML(tekst) {
@@ -93,57 +95,56 @@ function parseerXML(tekst) {
   const naam = t(doc, "Naam") || null;
   const gbStr = t(doc, "Geboortedatum");
   const geboortejaar = gbStr ? parseInt(gbStr.split("-")[0]) : null;
-  const resultMap = {};
+  const polisFirstSeen = {}, polisLastSeen = {};
   let aowSamen = 0, aowAlleen = 0, aowStart = 67.25;
   const blokken = g(doc, "OuderdomsPensioen");
   for (let b = 0; b < blokken.length; b++) {
     const blok = blokken[b];
     const vanEl = g(blok, "Van")[0];
-    const jaren   = parseInt(vanEl ? t(vanEl, "Jaren")   || "67" : "67");
-    const maanden = parseInt(vanEl ? t(vanEl, "Maanden") || "0"  : "0");
-    const startLeeftijd = jaren + maanden / 12;
+    const startLft = parseInt(vanEl ? t(vanEl, "Jaren") || "67" : "67") + parseInt(vanEl ? t(vanEl, "Maanden") || "0" : "0") / 12;
+    const totEl = g(blok, "Tot")[0];
+    const isLevenslang = totEl && t(totEl, "Jaren") === "";
+    const totLftNum = totEl && t(totEl, "Jaren") !== "" ? parseInt(t(totEl, "Jaren") || "0") + parseInt(t(totEl, "Maanden") || "0") / 12 : null;
     const aowEl = g(blok, "AOWDetailsOpbouw")[0];
-    if (aowEl) {
-      const s = parseInt(t(aowEl, "OpgebouwdSamenwonend") || "0");
-      if (s > aowSamen) { aowSamen = s; aowAlleen = parseInt(t(aowEl, "OpgebouwdAlleenstaand") || "0"); aowStart = startLeeftijd; }
-    }
+    if (aowEl) { const s = parseInt(t(aowEl, "OpgebouwdSamenwonend") || "0"); if (s > aowSamen) { aowSamen = s; aowAlleen = parseInt(t(aowEl, "OpgebouwdAlleenstaand") || "0"); aowStart = startLft; } }
     let polissen = g(blok, "IndicatiefPensioen");
     if (polissen.length === 0) polissen = g(blok, "Pensioen");
     for (let p = 0; p < polissen.length; p++) {
-      const pEl = polissen[p];
-      const h = t(pEl, "HerkenningsNummer"); if (!h) continue;
-      const key = `${h}@${startLeeftijd}`;
-      if (!resultMap[key]) resultMap[key] = { id: key, naam: t(pEl, "PensioenUitvoerder") || "Onbekend", herkenning: h, type: "pensioen", bruto_jaar: parseInt(t(pEl, "Opgebouwd") || "0") || parseInt(t(pEl, "TeBereiken") || "0"), startLeeftijd, standPer: t(pEl, "StandPer") };
+      const pEl = polissen[p]; const h = t(pEl, "HerkenningsNummer"); if (!h) continue;
+      const bedrag = parseInt(t(pEl, "Opgebouwd") || "0") || parseInt(t(pEl, "TeBereiken") || "0");
+      if (!polisFirstSeen[h]) polisFirstSeen[h] = { startLft, naam: t(pEl, "PensioenUitvoerder") || "Onbekend", standPer: t(pEl, "StandPer") };
+      polisLastSeen[h] = { bedrag, isLevenslang, totLftNum };
     }
   }
-  return { pensioenen: dedupPolissen(resultMap), aow: { samen: aowSamen, alleen: aowAlleen, startLeeftijd: aowStart }, naam, geboortejaar };
+  const polissen = Object.keys(polisFirstSeen).map(h => ({
+    id: `${h}@${polisFirstSeen[h].startLft}`, naam: polisFirstSeen[h].naam, herkenning: h, type: "pensioen",
+    bruto_jaar: polisLastSeen[h].bedrag, startLeeftijd: polisFirstSeen[h].startLft,
+    totLeeftijd: polisLastSeen[h].isLevenslang ? null : polisLastSeen[h].totLftNum,
+    standPer: polisFirstSeen[h].standPer,
+  }));
+  return { pensioenen: polissen, aow: { samen: aowSamen, alleen: aowAlleen, startLeeftijd: aowStart }, naam, geboortejaar };
 }
 
-function dedupPolissen(resultMap) {
-  const seen = {}, out = {};
-  Object.values(resultMap).sort((a, b) => a.startLeeftijd - b.startLeeftijd).forEach((p) => {
-    if (!seen[p.herkenning]) { seen[p.herkenning] = p.bruto_jaar; out[p.id] = p; }
-    else if (p.bruto_jaar !== seen[p.herkenning]) { out[p.id] = p; seen[p.herkenning] = p.bruto_jaar; }
-  });
-  return Object.values(out);
+function parseerBestand(inhoud, naam) {
+  const lower = naam.toLowerCase();
+  if (lower.endsWith(".json")) return parseerJSON(inhoud);
+  if (lower.endsWith(".xml"))  return parseerXML(inhoud);
+  throw new Error("Gebruik .json of .xml van mijnpensioenoverzicht.nl");
 }
 
-// ─── Default state ────────────────────────────────────────────────────────────
 const DEFAULT = {
-  personen: [],
-  pensioenen: [],
+  personen: [], pensioenen: [],
   vermogen: { spaargeld: 0, spaargeldGebruikVanaf: 67, spaargeldPerJaar: 0, woningWaarde: 0, woningGebruikVanaf: 75, woningPerJaar: 0 },
   simulatie: { aankoopJaar: 0, aankoopBedrag: 10000, aankoopUitkering: 600 },
 };
-
 const KLEUREN = ["#c9a84c", "#a084c9", "#4caf8a", "#5b9bd5", "#e07b54"];
 
-// ─── App ──────────────────────────────────────────────────────────────────────
 export default function PensioenApp() {
-  const [tab, setTab]               = useState("profiel");
-  const [geladen, setGeladen]       = useState(false);
-  const [opgeslagen, setOpgeslagen] = useState(null);
+  const [tab, setTab]                   = useState("profiel");
+  const [geladen, setGeladen]           = useState(false);
+  const [opgeslagen, setOpgeslagen]     = useState(null);
   const [importStatus, setImportStatus] = useState(null);
+  const [prognoseView, setPrognoseView] = useState("tijdlijn");
 
   const [personen,   setPersonenRaw]   = useState(DEFAULT.personen);
   const [pensioenen, setPensioenenRaw] = useState(DEFAULT.pensioenen);
@@ -160,21 +161,20 @@ export default function PensioenApp() {
           if (saved.vermogen)   setVermogenRaw(saved.vermogen);
           if (saved.simulatie)  setSimulatieRaw(saved.simulatie);
         }
-      } catch (e) { console.warn("Laden mislukt:", e); }
+      } catch (e) { console.warn(e); }
       setGeladen(true);
     })();
   }, []);
 
   async function slaOp(pe, ps, v, s) {
     try { await dbSet("state", { personen: pe, pensioenen: ps, vermogen: v, simulatie: s }); setOpgeslagen(new Date()); }
-    catch (e) { console.warn("Opslaan:", e); }
+    catch (e) { console.warn(e); }
   }
   function setPersonen(v)   { setPersonenRaw(v);   slaOp(v, pensioenen, vermogen, simulatie); }
   function setPensioenen(v) { setPensioenenRaw(v); slaOp(personen, v, vermogen, simulatie); }
   function setVermogen(v)   { setVermogenRaw(v);   slaOp(personen, pensioenen, v, simulatie); }
   function setSimulatie(v)  { setSimulatieRaw(v);  slaOp(personen, pensioenen, vermogen, v); }
 
-  // ─── Import ──────────────────────────────────────────────────────────────────
   function importeerBestand(e) {
     const file = e.target.files[0]; if (!file) return; e.target.value = "";
     const reader = new FileReader();
@@ -190,12 +190,12 @@ export default function PensioenApp() {
             nieuwePersonen = nieuwePersonen.map(p => p.id === eigenaarId ? { ...p, geboortejaar: result.geboortejaar ?? p.geboortejaar, aowSamen: result.aow.samen || p.aowSamen, aowAlleen: result.aow.alleen || p.aowAlleen, aowStartLeeftijd: result.aow.startLeeftijd ?? p.aowStartLeeftijd } : p);
           } else {
             eigenaarId = `persoon_${Date.now()}`;
-            nieuwePersonen = [...personen, { id: eigenaarId, naam: result.naam, geboortejaar: result.geboortejaar ?? 1970, pensioenLeeftijd: result.aow.startLeeftijd ?? 67.25, isHoofd: personen.length === 0, aowSamen: result.aow.samen, aowAlleen: result.aow.alleen, aowStartLeeftijd: result.aow.startLeeftijd ?? 67.25 }];
+            nieuwePersonen = [...personen, { id: eigenaarId, naam: result.naam, geboortejaar: result.geboortejaar ?? 1970, pensioenLeeftijd: result.aow.startLeeftijd ?? 67.25, aowSamen: result.aow.samen, aowAlleen: result.aow.alleen, aowStartLeeftijd: result.aow.startLeeftijd ?? 67.25 }];
           }
         } else {
           if (personen.length === 0) {
             eigenaarId = `persoon_${Date.now()}`;
-            nieuwePersonen = [{ id: eigenaarId, naam: "Ik", geboortejaar: 1970, pensioenLeeftijd: result.aow.startLeeftijd ?? 67.25, isHoofd: true, aowSamen: result.aow.samen, aowAlleen: result.aow.alleen, aowStartLeeftijd: result.aow.startLeeftijd ?? 67.25 }];
+            nieuwePersonen = [{ id: eigenaarId, naam: "Ik", geboortejaar: 1970, pensioenLeeftijd: result.aow.startLeeftijd ?? 67.25, aowSamen: result.aow.samen, aowAlleen: result.aow.alleen, aowStartLeeftijd: result.aow.startLeeftijd ?? 67.25 }];
           } else {
             const zonder = personen.find(p => !pensioenen.some(x => x.eigenaarId === p.id));
             eigenaarId = zonder?.id ?? personen[0].id;
@@ -209,7 +209,7 @@ export default function PensioenApp() {
         const naam = nieuwePersonen.find(p => p.id === eigenaarId)?.naam ?? "onbekend";
         setImportStatus({ ok: true, tekst: `✅ ${nieuwePens.length} regelingen ingeladen voor ${naam}${result.aow.samen > 0 ? ` · AOW € ${result.aow.samen.toLocaleString("nl-NL")}/jr` : ""}` });
         setTab("pensioenen");
-      } catch (err) { setImportStatus({ ok: false, tekst: `❌ ${err.message}` }); }
+      } catch (err) { console.error(err); setImportStatus({ ok: false, tekst: `❌ ${err.message}` }); }
     };
     reader.onerror = () => setImportStatus({ ok: false, tekst: "❌ Kon bestand niet lezen" });
     reader.readAsText(file);
@@ -225,131 +225,164 @@ export default function PensioenApp() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const data = JSON.parse(ev.target.result);
-        if (data.personen)   setPersonen(data.personen);
-        if (data.pensioenen) setPensioenen(data.pensioenen);
-        if (data.vermogen)   setVermogen(data.vermogen);
-        if (data.simulatie)  setSimulatie(data.simulatie);
+        const d = JSON.parse(ev.target.result);
+        if (d.personen)   setPersonen(d.personen);
+        if (d.pensioenen) setPensioenen(d.pensioenen);
+        if (d.vermogen)   setVermogen(d.vermogen);
+        if (d.simulatie)  setSimulatie(d.simulatie);
         setImportStatus({ ok: true, tekst: "✅ Backup hersteld" });
       } catch { setImportStatus({ ok: false, tekst: "❌ Ongeldig backup bestand" }); }
     };
     reader.readAsText(file);
   }
 
-  // ─── Berekeningen ─────────────────────────────────────────────────────────────
-  const hoofdpersoon = personen.find(p => p.isHoofd) ?? personen[0];
+  const personenGesorteerd = useMemo(() => [...personen].sort((a, b) => a.geboortejaar - b.geboortejaar), [personen]);
+
+  const startJaar = useMemo(() => {
+    if (personenGesorteerd.length === 0) return JAAR_NU;
+    const oudste = personenGesorteerd[0];
+    const eigenPens = pensioenen.filter(p => p.eigenaarId === oudste.id);
+    const vroegsteLft = eigenPens.length > 0 ? Math.min(...eigenPens.map(p => p.startLeeftijd)) : oudste.pensioenLeeftijd;
+    return oudste.geboortejaar + Math.floor(vroegsteLft);
+  }, [personenGesorteerd, pensioenen]);
+
+  // ─── Tijdlijn momenten ────────────────────────────────────────────────────────
+  const tijdlijnData = useMemo(() => {
+    if (personen.length === 0) return [];
+    const isSamen = personen.length > 1;
+
+    function berekenJaar(jaar) {
+      const items = [];
+      let totPensioenBruto = 0, totAowBruto = 0;
+      let totNetto = 0;
+
+      personen.forEach((persoon) => {
+        const lft = jaar - persoon.geboortejaar;
+        let persoonPensioenBruto = 0;
+
+        // Pensioenen
+        pensioenen.filter(p => p.eigenaarId === persoon.id).forEach((p) => {
+          const gestart = lft >= p.startLeeftijd;
+          const gestopt = p.totLeeftijd != null && lft >= p.totLeeftijd;
+          if (gestart && !gestopt) {
+            const bedrag = p.type === "bankspaar"
+              ? (() => { const r = (p.rente ?? 2) / 100; return r === 0 ? (p.saldo ?? 0) / 20 : ((p.saldo ?? 0) * r) / (1 - Math.pow(1 + r, -20)); })()
+              : (p.bruto_jaar ?? 0);
+            persoonPensioenBruto += bedrag;
+            items.push({ type: "pensioen", naam: p.naam, bedragJr: Math.round(bedrag), eigenaar: persoon.naam, eigenaarIdx: personenGesorteerd.findIndex(x => x.id === persoon.id), isNetto: false });
+          }
+        });
+
+        // Simulatie
+        if (persoon.id === personenGesorteerd[0]?.id && simulatie.aankoopJaar > 0) {
+          const simStart = persoon.geboortejaar + Math.floor(persoon.pensioenLeeftijd) + simulatie.aankoopJaar;
+          if (jaar >= simStart) {
+            const extra = simulatie.aankoopUitkering * 12;
+            persoonPensioenBruto += extra;
+            items.push({ type: "pensioen", naam: "Extra aankoop", bedragJr: extra, eigenaar: persoon.naam, eigenaarIdx: personenGesorteerd.findIndex(x => x.id === persoon.id), isNetto: false });
+          }
+        }
+
+        // AOW
+        const aowStart = persoon.aowStartLeeftijd ?? 67.25;
+        let persoonAowBruto = 0;
+        if (lft >= aowStart) {
+          persoonAowBruto = isSamen ? (persoon.aowSamen || AOW_SAMEN_MND * 12) : (persoon.aowAlleen || AOW_ALLEEN_MND * 12);
+          items.push({ type: "aow", naam: "AOW", bedragJr: Math.round(persoonAowBruto), eigenaar: persoon.naam, eigenaarIdx: personenGesorteerd.findIndex(x => x.id === persoon.id), isNetto: false });
+          totAowBruto += persoonAowBruto;
+        }
+
+        totPensioenBruto += persoonPensioenBruto;
+        // Netto per persoon: belasting over pensioen + AOW samen
+        totNetto += berekenNetto(Math.round(persoonPensioenBruto) + Math.round(persoonAowBruto));
+      });
+
+      // Vermogen: netto — geen belasting, direct optellen
+      const lftOudste = personenGesorteerd[0] ? jaar - personenGesorteerd[0].geboortejaar : 0;
+      const spaargeld = lftOudste >= vermogen.spaargeldGebruikVanaf ? vermogen.spaargeldPerJaar : 0;
+      const woning    = lftOudste >= vermogen.woningGebruikVanaf    ? vermogen.woningPerJaar    : 0;
+
+      if (spaargeld > 0) {
+        items.push({ type: "vermogen", naam: "Spaargeld inzetten", bedragJr: spaargeld, eigenaar: "", eigenaarIdx: -1, isNetto: true });
+        totNetto += spaargeld; // netto: geen belasting
+      }
+      if (woning > 0) {
+        items.push({ type: "vermogen", naam: "Woning (hypotheek/verkoop)", bedragJr: woning, eigenaar: "", eigenaarIdx: -1, isNetto: true });
+        totNetto += woning; // netto: geen belasting
+      }
+
+      const totBrutoMnd = Math.round((totPensioenBruto + totAowBruto) / 12);
+      const totNettoMnd = Math.round(totNetto / 12);
+
+      return { totBrutoMnd, totNettoMnd, totNettoMndZonderVermogen: Math.round((totNetto - spaargeld - woning) / 12), spaargeld, woning, items };
+    }
+
+    const momenten = [];
+    let vorigeHash = null;
+
+    for (let i = 0; i < 35; i++) {
+      const jaar = startJaar + i;
+      const data = berekenJaar(jaar);
+      const hash = data.items.map(x => `${x.naam}:${x.eigenaar}:${x.bedragJr}`).join("|");
+
+      if (hash !== vorigeHash) {
+        const leeftijdsLabels = personenGesorteerd.map(p => {
+          const lft = jaar - p.geboortejaar;
+          const jaren = Math.floor(lft);
+          const mnd = Math.round((lft - jaren) * 12);
+          return `${p.naam.split(" ")[0]} ${jaren}${mnd > 0 ? `j${mnd}m` : "j"}`;
+        }).join(" · ");
+
+        momenten.push({ jaar, leeftijdsLabels, data });
+        vorigeHash = hash;
+      }
+    }
+    return momenten;
+  }, [personen, personenGesorteerd, pensioenen, vermogen, simulatie, startJaar]);
+
+  // ─── Chartdata ────────────────────────────────────────────────────────────────
+  const pensioenmomenten = useMemo(() => personenGesorteerd.map((p, pi) => ({
+    jaar: p.geboortejaar + Math.floor(p.pensioenLeeftijd), naam: p.naam.split(" ")[0], kleur: KLEUREN[pi % KLEUREN.length],
+  })), [personenGesorteerd]);
 
   const chartData = useMemo(() => {
-    if (!hoofdpersoon) return [];
-    const startLft  = hoofdpersoon.pensioenLeeftijd;
-    const startJaar = JAAR_NU + Math.round(startLft - (JAAR_NU - hoofdpersoon.geboortejaar));
-
-    return Array.from({ length: 26 }, (_, i) => {
-      const hoofdLft = startLft + i;
+    if (personen.length === 0) return [];
+    const isSamen = personen.length > 1;
+    return Array.from({ length: 30 }, (_, i) => {
       const jaar = startJaar + i;
-
-      let totaalPensioenBruto = 0, totaalAowBruto = 0, totaalNetto = 0;
+      let totPensioen = 0, totAow = 0, totNetto = 0;
       const pp = {};
-
       personen.forEach((persoon) => {
-        // Werkelijke leeftijd van deze persoon dit jaar
-        const lft = hoofdLft + (hoofdpersoon.geboortejaar - persoon.geboortejaar);
-
-        // Pensioen: actief zodra persoon zijn eigen pensioenLeeftijd bereikt
-        const pensioenActief = lft >= persoon.pensioenLeeftijd;
+        const lft = jaar - persoon.geboortejaar;
         let pensioenBruto = 0;
-        if (pensioenActief) {
-          pensioenen.filter(p => p.eigenaarId === persoon.id).forEach((p) => {
-            if (lft >= p.startLeeftijd) {
-              if (p.type === "bankspaar") {
-                const r = (p.rente ?? 2) / 100;
-                pensioenBruto += r === 0 ? (p.saldo ?? 0) / 20 : ((p.saldo ?? 0) * r) / (1 - Math.pow(1 + r, -20));
-              } else {
-                pensioenBruto += p.bruto_jaar ?? 0;
-              }
-            }
-          });
-        }
-
-        // Simulatie alleen voor hoofdpersoon
-        if (persoon.isHoofd && simulatie.aankoopJaar > 0 && hoofdLft >= startLft + simulatie.aankoopJaar) {
-          pensioenBruto += simulatie.aankoopUitkering * 12;
-        }
-
-        // AOW: op basis van werkelijke leeftijd én aowStartLeeftijd
+        pensioenen.filter(p => p.eigenaarId === persoon.id).forEach((p) => {
+          if (lft >= p.startLeeftijd && !(p.totLeeftijd != null && lft >= p.totLeeftijd)) {
+            pensioenBruto += p.type === "bankspaar" ? (() => { const r = (p.rente ?? 2) / 100; return r === 0 ? (p.saldo ?? 0) / 20 : ((p.saldo ?? 0) * r) / (1 - Math.pow(1 + r, -20)); })() : (p.bruto_jaar ?? 0);
+          }
+        });
+        if (persoon.id === personenGesorteerd[0]?.id && simulatie.aankoopJaar > 0 && jaar >= persoon.geboortejaar + Math.floor(persoon.pensioenLeeftijd) + simulatie.aankoopJaar) pensioenBruto += simulatie.aankoopUitkering * 12;
         const aowStart = persoon.aowStartLeeftijd ?? 67.25;
-        const heeftAow = lft >= aowStart;
-
-        pp[persoon.id] = { lft: +lft.toFixed(2), pensioenBruto: Math.round(pensioenBruto), heeftAow, pensioenActief };
-        totaalPensioenBruto += pensioenBruto;
+        const aowBruto = lft >= aowStart ? (isSamen ? (persoon.aowSamen || AOW_SAMEN_MND * 12) : (persoon.aowAlleen || AOW_ALLEEN_MND * 12)) : 0;
+        if (lft >= aowStart) totAow += aowBruto;
+        pp[persoon.id] = { lft: lft.toFixed(1), pensioenBruto: Math.round(pensioenBruto) };
+        totPensioen += pensioenBruto;
+        totNetto += berekenNetto(Math.round(pensioenBruto) + aowBruto);
       });
-
-      // AOW bedrag: samenwonend tarief als huishouden 2+ personen heeft
-      const isSamen = personen.length > 1;
-      personen.forEach((persoon) => {
-        if (!pp[persoon.id].heeftAow) return;
-        const aowJaar = isSamen
-          ? (persoon.aowSamen  || AOW_SAMEN_MND  * 12)
-          : (persoon.aowAlleen || AOW_ALLEEN_MND * 12);
-        totaalAowBruto += aowJaar;
-        totaalNetto += berekenNetto(pp[persoon.id].pensioenBruto + aowJaar);
-      });
-
-      // Personen zonder AOW: netto over alleen pensioen
-      personen.forEach((persoon) => {
-        if (pp[persoon.id].heeftAow) return;
-        totaalNetto += berekenNetto(pp[persoon.id].pensioenBruto);
-      });
-
-      const spaargeld = hoofdLft >= vermogen.spaargeldGebruikVanaf ? vermogen.spaargeldPerJaar : 0;
-      const woning    = hoofdLft >= vermogen.woningGebruikVanaf    ? vermogen.woningPerJaar    : 0;
-      totaalNetto += spaargeld + woning;
-
-      const totalBruto = Math.round(totaalPensioenBruto + totaalAowBruto + spaargeld + woning);
-
-      const rij = {
-        leeftijd: +hoofdLft.toFixed(1), jaar,
-        pensioenBruto: Math.round(totaalPensioenBruto),
-        aowBruto: Math.round(totaalAowBruto),
-        spaargeld: Math.round(spaargeld),
-        woning: Math.round(woning),
-        totalBruto,
-        totalNetto: Math.round(totaalNetto),
-        totalNettoMaand: Math.round(totaalNetto / 12),
-        totalBrutoMaand: Math.round(totalBruto / 12),
-        aantalMetAow: personen.filter(p => pp[p.id].heeftAow).length,
-        aantalMetPensioen: personen.filter(p => pp[p.id].pensioenActief).length,
-      };
-      personen.forEach(p => { rij[`pen_${p.id}`] = pp[p.id].pensioenBruto; rij[`lft_${p.id}`] = pp[p.id].lft; });
+      const lftOudste = parseFloat(pp[personenGesorteerd[0]?.id]?.lft ?? 0);
+      const spaargeld = lftOudste >= vermogen.spaargeldGebruikVanaf ? vermogen.spaargeldPerJaar : 0;
+      const woning    = lftOudste >= vermogen.woningGebruikVanaf    ? vermogen.woningPerJaar    : 0;
+      totNetto += spaargeld + woning; // netto: geen belasting
+      const totalBruto = Math.round(totPensioen + totAow + spaargeld + woning);
+      const rij = { jaar, pensioenBruto: Math.round(totPensioen), aowBruto: Math.round(totAow), spaargeld: Math.round(spaargeld), woning: Math.round(woning), totalBruto, totalNetto: Math.round(totNetto), totalNettoMaand: Math.round(totNetto / 12), totalBrutoMaand: Math.round(totalBruto / 12) };
+      personen.forEach(p => { rij[`pen_${p.id}`] = pp[p.id]?.pensioenBruto ?? 0; rij[`lft_${p.id}`] = pp[p.id]?.lft ?? "-"; });
       return rij;
     });
-  }, [personen, pensioenen, vermogen, simulatie, hoofdpersoon]);
+  }, [personen, personenGesorteerd, pensioenen, vermogen, simulatie, startJaar]);
 
-  // Bepaal de referentielijnen: momenten waarop inkomensstap plaatsvindt
-  const inkomensMomenten = useMemo(() => {
-    if (!hoofdpersoon || chartData.length === 0) return [];
-    const momenten = [];
-    // Moment 1: start van prognose = hoofdpersoon met pensioen
-    momenten.push({ leeftijd: chartData[0]?.leeftijd, label: `${hoofdpersoon.naam} met pensioen`, kleur: KLEUREN[0] });
-    // Moment 2+: elke andere persoon gaat met pensioen
-    personen.filter(p => !p.isHoofd).forEach((persoon, pi) => {
-      // Zoek het jaar waarop aantalMetPensioen stijgt voor deze persoon
-      const rij = chartData.find(r => r[`lft_${persoon.id}`] !== undefined && r[`lft_${persoon.id}`] >= persoon.pensioenLeeftijd);
-      if (rij) momenten.push({ leeftijd: rij.leeftijd, label: `${persoon.naam} met pensioen`, kleur: KLEUREN[(pi + 1) % KLEUREN.length] });
-    });
-    return momenten;
-  }, [chartData, personen, hoofdpersoon]);
-
-  const ps = chartData[0];
-
-  if (!geladen) return (
-    <div style={{ background: "#0f1923", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#c9a84c", fontFamily: "Georgia,serif", fontSize: 18 }}>Gegevens laden...</div>
-  );
+  if (!geladen) return <div style={{ background: "#0f1923", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#c9a84c", fontFamily: "Georgia,serif", fontSize: 18 }}>Gegevens laden...</div>;
 
   return (
     <div style={{ fontFamily: "'Georgia',serif", background: "#0f1923", minHeight: "100vh", color: "#e8dcc8" }}>
-
-      {/* Header */}
       <div style={{ background: "linear-gradient(135deg,#1a2d3d,#0f1923)", borderBottom: "1px solid #2a4a5e", padding: "16px 24px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: "#c9a84c" }}>🏦 Pensioen Planner <span style={{ fontSize: 11, color: "#555", fontWeight: 400 }}>{FIX_NR}</span></h1>
@@ -357,10 +390,7 @@ export default function PensioenApp() {
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           {opgeslagen && <span style={{ fontSize: 11, color: "#4caf8a" }}>✓ {opgeslagen.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}</span>}
-          <label style={{ ...btn("#5b9bd5"), cursor: "pointer" }}>
-            📥 Pensioen importeren
-            <input type="file" accept=".json,.xml" onChange={importeerBestand} style={{ display: "none" }} />
-          </label>
+          <label style={{ ...btn("#5b9bd5"), cursor: "pointer" }}>📥 Pensioen importeren<input type="file" accept=".json,.xml" onChange={importeerBestand} style={{ display: "none" }} /></label>
           <button onClick={exporteer} style={btn("#c9a84c")}>⬇ Backup</button>
           <label style={{ ...btn("#7a9bb0"), cursor: "pointer" }}>⬆ Herstel<input type="file" accept=".json" onChange={importeerBackup} style={{ display: "none" }} /></label>
         </div>
@@ -373,7 +403,6 @@ export default function PensioenApp() {
         </div>
       )}
 
-      {/* Tabs */}
       <div style={{ display: "flex", background: "#111d26", borderBottom: "1px solid #2a4a5e", overflowX: "auto" }}>
         {[["profiel","👤 Profiel"],["pensioenen","📄 Pensioenen"],["vermogen","🏠 Vermogen"],["simulatie","🎮 Simulatie"],["prognose","📈 Prognose"]].map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)} style={{ padding: "12px 20px", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", background: tab === key ? "#1a2d3d" : "transparent", color: tab === key ? "#c9a84c" : "#7a9bb0", borderBottom: tab === key ? "2px solid #c9a84c" : "2px solid transparent" }}>{label}</button>
@@ -382,7 +411,7 @@ export default function PensioenApp() {
 
       <div style={{ maxWidth: 980, margin: "0 auto", padding: "28px 20px" }}>
 
-        {/* ── PROFIEL ── */}
+        {/* PROFIEL */}
         {tab === "profiel" && <Section title="Profiel">
           {personen.length === 0 && (
             <div style={{ padding: 24, background: "#1a2d3d", borderRadius: 12, border: "1px solid #2a4a5e", textAlign: "center", marginBottom: 24 }}>
@@ -390,24 +419,19 @@ export default function PensioenApp() {
               <label style={{ ...btn("#5b9bd5"), cursor: "pointer" }}>📥 Importeren<input type="file" accept=".json,.xml" onChange={importeerBestand} style={{ display: "none" }} /></label>
             </div>
           )}
-
-          {personen.map((persoon, pi) => (
+          {personenGesorteerd.map((persoon, pi) => (
             <div key={persoon.id} style={{ background: "#1a2d3d", border: `1px solid ${KLEUREN[pi % KLEUREN.length]}44`, borderRadius: 12, padding: 18, marginBottom: 16 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
                 <h3 style={{ margin: 0, color: KLEUREN[pi % KLEUREN.length], fontSize: 15 }}>
-                  {persoon.isHoofd ? "👤" : "👥"} {persoon.naam}
-                  {persoon.isHoofd && <span style={{ fontSize: 11, color: "#555", marginLeft: 8 }}>· prognose start hier</span>}
+                  {pi === 0 ? "👤 " : "👥 "}{persoon.naam}{pi === 0 && <span style={{ fontSize: 11, color: "#555", marginLeft: 8 }}>· oudste</span>}
                 </h3>
-                {!persoon.isHoofd && (
-                  <button onClick={() => { setPersonen(personen.filter(p => p.id !== persoon.id)); setPensioenen(pensioenen.filter(p => p.eigenaarId !== persoon.id)); }}
-                    style={{ background: "#c0392b22", border: "1px solid #c0392b44", color: "#e74c3c", padding: "3px 9px", borderRadius: 6, cursor: "pointer" }}>✕</button>
-                )}
+                <button onClick={() => { setPersonen(personen.filter(p => p.id !== persoon.id)); setPensioenen(pensioenen.filter(p => p.eigenaarId !== persoon.id)); }} style={{ background: "#c0392b22", border: "1px solid #c0392b44", color: "#e74c3c", padding: "3px 9px", borderRadius: 6, cursor: "pointer" }}>✕</button>
               </div>
               <Grid>
                 <Field label="Naam" value={persoon.naam} onChange={v => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, naam: v } : p))} />
                 <Field label="Geboortejaar" value={persoon.geboortejaar} onChange={v => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, geboortejaar: +v } : p))} type="number" />
                 <div>
-                  <label style={lbl}>Pensioenleeftijd {!persoon.isHoofd && <span style={{ color: "#a084c9" }}>← hier spelen</span>}</label>
+                  <label style={lbl}>Pensioenleeftijd{pi > 0 && <span style={{ color: "#a084c9", fontSize: 10, marginLeft: 6 }}>← speel hiermee</span>}</label>
                   <input type="number" step="0.25" value={persoon.pensioenLeeftijd} onChange={e => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, pensioenLeeftijd: +e.target.value } : p))} style={inp} />
                 </div>
                 <Field label="AOW vanaf leeftijd" value={persoon.aowStartLeeftijd ?? 67.25} onChange={v => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, aowStartLeeftijd: +v } : p))} type="number" />
@@ -420,194 +444,281 @@ export default function PensioenApp() {
               )}
             </div>
           ))}
-
-          {/* Samenvatting bij pensionering */}
-          {ps && hoofdpersoon && (
+          {tijdlijnData.length > 0 && (
             <div style={{ padding: 20, background: "#1a2d3d", borderRadius: 12, border: "1px solid #2a4a5e" }}>
-              <h3 style={{ margin: "0 0 14px", color: "#c9a84c", fontSize: 14 }}>📊 Direct na jouw pensionering (leeftijd {hoofdpersoon.pensioenLeeftijd})</h3>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(155px,1fr))", gap: 12, marginBottom: 16 }}>
-                <KPI label="Bruto/maand" value={`€ ${ps.totalBrutoMaand.toLocaleString("nl-NL")}`} kleur="#c9a84c" />
-                <KPI label="Netto/maand" value={`€ ${ps.totalNettoMaand.toLocaleString("nl-NL")}`} kleur="#4caf8a" />
-                <KPI label="Pensioen bruto/jr" value={`€ ${ps.pensioenBruto.toLocaleString("nl-NL")}`} kleur="#c9a84c" />
-                <KPI label="AOW bruto/jr" value={`€ ${ps.aowBruto.toLocaleString("nl-NL")}`} kleur="#5b9bd5" />
-              </div>
-              {/* Inkomensstappen */}
-              {inkomensMomenten.length > 1 && (
-                <div>
-                  <p style={{ margin: "0 0 8px", color: "#7a9bb0", fontSize: 12 }}>Inkomensstappen:</p>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                    {inkomensMomenten.map((m, i) => {
-                      const rij = chartData.find(r => r.leeftijd === m.leeftijd);
-                      return rij ? (
-                        <div key={i} style={{ background: "#111d26", border: `1px solid ${m.kleur}44`, borderRadius: 8, padding: "8px 14px" }}>
-                          <div style={{ fontSize: 11, color: m.kleur, marginBottom: 2 }}>📍 {m.label}</div>
-                          <div style={{ fontSize: 13, color: "#e8dcc8" }}>€ {rij.totalNettoMaand.toLocaleString("nl-NL")}/mnd netto</div>
-                        </div>
-                      ) : null;
-                    })}
+              <h3 style={{ margin: "0 0 14px", color: "#c9a84c", fontSize: 14 }}>📊 Inkomensmomenten</h3>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+                {tijdlijnData.map((m, i) => (
+                  <div key={i} style={{ background: "#111d26", border: `1px solid ${KLEUREN[i % KLEUREN.length]}44`, borderRadius: 10, padding: "12px 16px", minWidth: 170 }}>
+                    <div style={{ color: KLEUREN[i % KLEUREN.length], fontSize: 12, fontWeight: 600, marginBottom: 2 }}>📍 {m.jaar}</div>
+                    <div style={{ color: "#7a9bb0", fontSize: 11, marginBottom: 8 }}>{m.leeftijdsLabels}</div>
+                    <div style={{ color: "#c9a84c", fontSize: 12 }}>€ {m.data.totBrutoMnd.toLocaleString("nl-NL")}/mnd bruto</div>
+                    <div style={{ color: "#4caf8a", fontSize: 16, fontWeight: 700 }}>€ {m.data.totNettoMnd.toLocaleString("nl-NL")}/mnd netto</div>
                   </div>
-                </div>
-              )}
+                ))}
+              </div>
             </div>
           )}
         </Section>}
 
-        {/* ── PENSIOENEN ── */}
+        {/* PENSIOENEN */}
         {tab === "pensioenen" && <Section title="Pensioenen & producten">
-          <div style={{ padding: 12, background: "#1a2d3d", borderRadius: 10, border: "1px solid #2a4a5e", marginBottom: 20 }}>
-            <p style={{ margin: 0, color: "#7a9bb0", fontSize: 13 }}>📥 Importeer elk pensioenoverzicht afzonderlijk. De app herkent automatisch van wie het bestand is.</p>
-          </div>
-          {personen.length === 0
-            ? <div style={{ textAlign: "center", padding: 40, color: "#4a6a7e" }}>Nog geen pensioenen.</div>
-            : personen.map((persoon, pi) => {
-                const eigenPens = pensioenen.filter(p => p.eigenaarId === persoon.id);
-                return (
-                  <div key={persoon.id} style={{ marginBottom: 28 }}>
-                    <h3 style={{ color: KLEUREN[pi % KLEUREN.length], fontSize: 14, marginBottom: 12 }}>
-                      {persoon.isHoofd ? "👤" : "👥"} {persoon.naam}
-                      <span style={{ fontSize: 11, color: "#555", marginLeft: 8 }}>· pensioen vanaf {persoon.pensioenLeeftijd}</span>
-                    </h3>
-                    {eigenPens.length === 0
-                      ? <div style={{ padding: 16, color: "#4a6a7e", fontSize: 13, textAlign: "center" }}>Geen pensioenen voor {persoon.naam}</div>
-                      : eigenPens.map(p => <PensioenRij key={p.id} p={p} alle={pensioenen} setPensioenen={setPensioenen} kleur={KLEUREN[pi % KLEUREN.length]} />)
-                    }
-                  </div>
-                );
-              })
-          }
-          <button onClick={() => { const id = hoofdpersoon?.id ?? "onbekend"; setPensioenen([...pensioenen, { id: `handmatig_${Date.now()}`, naam: "Nieuw pensioen", type: "pensioen", eigenaarId: id, bruto_jaar: 0, startLeeftijd: 67.25 }]); }}
-            style={{ background: "#c9a84c22", border: "1px solid #c9a84c44", color: "#c9a84c", padding: "9px 18px", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>
-            + Handmatig toevoegen
-          </button>
+          {personenGesorteerd.map((persoon, pi) => {
+            const eigenPens = pensioenen.filter(p => p.eigenaarId === persoon.id);
+            return (
+              <div key={persoon.id} style={{ marginBottom: 28 }}>
+                <h3 style={{ color: KLEUREN[pi % KLEUREN.length], fontSize: 14, marginBottom: 12 }}>{pi === 0 ? "👤" : "👥"} {persoon.naam} · geb. {persoon.geboortejaar}</h3>
+                {eigenPens.length === 0 ? <div style={{ padding: 16, color: "#4a6a7e", fontSize: 13, textAlign: "center" }}>Geen pensioenen</div>
+                  : eigenPens.map(p => <PensioenRij key={p.id} p={p} alle={pensioenen} setPensioenen={setPensioenen} kleur={KLEUREN[pi % KLEUREN.length]} />)}
+              </div>
+            );
+          })}
+          <button onClick={() => { const id = personenGesorteerd[0]?.id ?? "onbekend"; setPensioenen([...pensioenen, { id: `handmatig_${Date.now()}`, naam: "Nieuw pensioen", type: "pensioen", eigenaarId: id, bruto_jaar: 0, startLeeftijd: 67.25, totLeeftijd: null }]); }} style={{ background: "#c9a84c22", border: "1px solid #c9a84c44", color: "#c9a84c", padding: "9px 18px", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>+ Handmatig toevoegen</button>
         </Section>}
 
-        {/* ── VERMOGEN ── */}
+        {/* VERMOGEN */}
         {tab === "vermogen" && <Section title="Spaargeld & Woning">
-          <h3 style={{ color: "#c9a84c", fontSize: 14, marginBottom: 12 }}>💰 Spaargeld</h3>
+          <div style={{ padding: 12, background: "#1a3d2d", borderRadius: 10, border: "1px solid #4caf8a33", marginBottom: 20 }}>
+            <p style={{ margin: 0, color: "#4caf8a", fontSize: 13 }}>
+              💡 Deze bedragen zijn <strong>netto</strong> — er wordt geen belasting over berekend. Ze worden direct opgeteld bij het netto inkomen.
+            </p>
+          </div>
+          <h3 style={{ color: "#c9a84c", fontSize: 14, marginBottom: 12 }}>💰 Spaargeld inzetten als inkomen</h3>
           <Grid>
             <Field label="Totaal spaargeld (€)" value={vermogen.spaargeld} onChange={v=>setVermogen({...vermogen,spaargeld:+v})} type="number" />
-            <Field label="Gebruik vanaf leeftijd" value={vermogen.spaargeldGebruikVanaf} onChange={v=>setVermogen({...vermogen,spaargeldGebruikVanaf:+v})} type="number" />
-            <Field label="Per jaar opnemen (€)" value={vermogen.spaargeldPerJaar} onChange={v=>setVermogen({...vermogen,spaargeldPerJaar:+v})} type="number" />
+            <Field label="Gebruik vanaf leeftijd oudste" value={vermogen.spaargeldGebruikVanaf} onChange={v=>setVermogen({...vermogen,spaargeldGebruikVanaf:+v})} type="number" />
+            <Field label="Per jaar opnemen — netto (€)" value={vermogen.spaargeldPerJaar} onChange={v=>setVermogen({...vermogen,spaargeldPerJaar:+v})} type="number" />
           </Grid>
-          <h3 style={{ color: "#c9a84c", fontSize: 14, marginBottom: 12, marginTop: 24 }}>🏠 Woning</h3>
+          <h3 style={{ color: "#c9a84c", fontSize: 14, marginBottom: 12, marginTop: 24 }}>🏠 Woning inzetten als inkomen</h3>
+          <p style={{ color: "#7a9bb0", fontSize: 12, marginBottom: 12 }}>Bijv. verzilverhypotheek of verkoop + terughuur. Vul het netto bedrag in dat vrijkomt.</p>
           <Grid>
             <Field label="Woningwaarde (€)" value={vermogen.woningWaarde} onChange={v=>setVermogen({...vermogen,woningWaarde:+v})} type="number" />
-            <Field label="Gebruik vanaf leeftijd" value={vermogen.woningGebruikVanaf} onChange={v=>setVermogen({...vermogen,woningGebruikVanaf:+v})} type="number" />
-            <Field label="Inkomen per jaar (€)" value={vermogen.woningPerJaar} onChange={v=>setVermogen({...vermogen,woningPerJaar:+v})} type="number" />
+            <Field label="Gebruik vanaf leeftijd oudste" value={vermogen.woningGebruikVanaf} onChange={v=>setVermogen({...vermogen,woningGebruikVanaf:+v})} type="number" />
+            <Field label="Per jaar vrijmaken — netto (€)" value={vermogen.woningPerJaar} onChange={v=>setVermogen({...vermogen,woningPerJaar:+v})} type="number" />
           </Grid>
         </Section>}
 
-        {/* ── SIMULATIE ── */}
+        {/* SIMULATIE */}
         {tab === "simulatie" && <Section title="Pensioen aankoop simulatie">
-          <p style={{ color: "#7a9bb0", fontSize: 13, marginBottom: 18 }}>Speel ook met de pensioenleeftijd van je partner via het Profiel tabblad.</p>
           <Grid>
-            <Field label="Extra aankoop X jaar na pensionering" value={simulatie.aankoopJaar} onChange={v=>setSimulatie({...simulatie,aankoopJaar:+v})} type="number" />
+            <Field label="Extra aankoop X jaar na 1e pensionering" value={simulatie.aankoopJaar} onChange={v=>setSimulatie({...simulatie,aankoopJaar:+v})} type="number" />
             <Field label="Aankoopbedrag (€)" value={simulatie.aankoopBedrag} onChange={v=>setSimulatie({...simulatie,aankoopBedrag:+v})} type="number" />
             <Field label="Extra uitkering per maand (€)" value={simulatie.aankoopUitkering} onChange={v=>setSimulatie({...simulatie,aankoopUitkering:+v})} type="number" />
           </Grid>
         </Section>}
 
-        {/* ── PROGNOSE ── */}
+        {/* PROGNOSE */}
         {tab === "prognose" && <Section title="Inkomensprognose">
-          {personen.length > 1 && (
-            <div style={{ padding: 12, background: "#1a2d3d", borderRadius: 10, border: "1px solid #2a4a5e", marginBottom: 16, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-              <span style={{ color: "#7a9bb0", fontSize: 12 }}>🎮 Speel met pensioenleeftijd:</span>
-              {personen.filter(p => !p.isHoofd).map((persoon, pi) => (
-                <div key={persoon.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ color: KLEUREN[(pi+1) % KLEUREN.length], fontSize: 13 }}>{persoon.naam}</span>
-                  <input type="number" step="0.25" value={persoon.pensioenLeeftijd} min="55" max="75"
-                    onChange={e => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, pensioenLeeftijd: +e.target.value } : p))}
-                    style={{ ...inp, width: 70 }} />
-                  <span style={{ color: "#7a9bb0", fontSize: 12 }}>jr</span>
+          <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+            <button onClick={() => setPrognoseView("tijdlijn")} style={{ ...btn(prognoseView === "tijdlijn" ? "#c9a84c" : "#3a5a6e"), fontWeight: prognoseView === "tijdlijn" ? 700 : 400 }}>📋 Tijdlijn</button>
+            <button onClick={() => setPrognoseView("grafiek")}  style={{ ...btn(prognoseView === "grafiek"  ? "#c9a84c" : "#3a5a6e"), fontWeight: prognoseView === "grafiek"  ? 700 : 400 }}>📈 Grafiek & tabel</button>
+          </div>
+
+          {prognoseView === "tijdlijn" && (
+            <div>
+              {personenGesorteerd.length > 1 && (
+                <div style={{ padding: 12, background: "#1a2d3d", borderRadius: 10, border: "1px solid #2a4a5e", marginBottom: 20, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ color: "#7a9bb0", fontSize: 12 }}>🎮 Pensioenleeftijd aanpassen:</span>
+                  {personenGesorteerd.slice(1).map((persoon, pi) => (
+                    <div key={persoon.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ color: KLEUREN[(pi+1) % KLEUREN.length], fontSize: 13 }}>{persoon.naam.split(" ")[0]}</span>
+                      <input type="number" step="0.25" value={persoon.pensioenLeeftijd} min="55" max="75" onChange={e => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, pensioenLeeftijd: +e.target.value } : p))} style={{ ...inp, width: 70 }} />
+                      <span style={{ color: "#7a9bb0", fontSize: 11 }}>= {persoon.geboortejaar + Math.floor(+persoon.pensioenLeeftijd)}</span>
+                    </div>
+                  ))}
                 </div>
+              )}
+              <div style={{ position: "relative", paddingLeft: 24 }}>
+                <div style={{ position: "absolute", left: 8, top: 12, bottom: 12, width: 2, background: "#2a4a5e", borderRadius: 1 }} />
+                {tijdlijnData.map((moment, mi) => (
+                  <TijdlijnMoment key={`${moment.jaar}-${mi}`} moment={moment} mi={mi} personenGesorteerd={personenGesorteerd} KLEUREN={KLEUREN} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {prognoseView === "grafiek" && (
+            <>
+              {personenGesorteerd.length > 1 && (
+                <div style={{ padding: 12, background: "#1a2d3d", borderRadius: 10, border: "1px solid #2a4a5e", marginBottom: 16, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ color: "#7a9bb0", fontSize: 12 }}>🎮 Pensioenleeftijd:</span>
+                  {personenGesorteerd.slice(1).map((persoon, pi) => (
+                    <div key={persoon.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ color: KLEUREN[(pi+1) % KLEUREN.length], fontSize: 13 }}>{persoon.naam.split(" ")[0]}</span>
+                      <input type="number" step="0.25" value={persoon.pensioenLeeftijd} min="55" max="75" onChange={e => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, pensioenLeeftijd: +e.target.value } : p))} style={{ ...inp, width: 70 }} />
+                      <span style={{ color: "#7a9bb0", fontSize: 11 }}>= {persoon.geboortejaar + Math.floor(+persoon.pensioenLeeftijd)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ background: "#1a2d3d", borderRadius: 12, padding: 18, marginBottom: 20 }}>
+                <ResponsiveContainer width="100%" height={260}>
+                  <LineChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#2a4a5e" />
+                    <XAxis dataKey="jaar" stroke="#7a9bb0" tick={{ fontSize: 11 }} />
+                    <YAxis stroke="#7a9bb0" tick={{ fontSize: 11 }} tickFormatter={v=>`€${(v/1000).toFixed(0)}k`} />
+                    <Tooltip formatter={v=>[`€ ${Number(v).toLocaleString("nl-NL")}`]} contentStyle={{ background: "#0f1923", border: "1px solid #2a4a5e", borderRadius: 8, fontSize: 12 }} />
+                    <Legend />
+                    {pensioenmomenten.map((m, i) => <ReferenceLine key={i} x={m.jaar} stroke={m.kleur} strokeDasharray="4 2" label={{ value: m.naam, position: "insideTopLeft", fill: m.kleur, fontSize: 10 }} />)}
+                    <Line type="monotone" dataKey="totalBruto" name="Bruto" stroke="#c9a84c" strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="totalNetto" name="Netto" stroke="#4caf8a" strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="aowBruto"   name="AOW"   stroke="#5b9bd5" strokeWidth={1} dot={false} strokeDasharray="4 2" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: "#1a2d3d" }}>
+                      <th style={th}>Jaar</th>
+                      {personenGesorteerd.map((p, pi) => <th key={p.id} style={{ ...th, color: KLEUREN[pi % KLEUREN.length] }}>{p.naam.split(" ")[0]} lft</th>)}
+                      <th style={th}>Pensioen/jr</th><th style={th}>AOW/jr</th>
+                      <th style={{ ...th, color: "#4caf8a" }}>Spaar netto/jr</th>
+                      <th style={{ ...th, color: "#4caf8a" }}>Woning netto/jr</th>
+                      <th style={th}>Bruto/mnd</th><th style={th}>Netto/mnd</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {chartData.map((r, i) => {
+                      const isMoment = pensioenmomenten.some(m => m.jaar === r.jaar);
+                      return (
+                        <tr key={i} style={{ background: isMoment ? "#1a2d1a" : i % 2 === 0 ? "#111d26" : "#0f1923", borderTop: isMoment ? "2px solid #4caf8a44" : undefined }}>
+                          <td style={{ ...cel, color: isMoment ? "#4caf8a" : "#e8dcc8", fontWeight: isMoment ? 700 : 400 }}>{r.jaar}{isMoment ? " 📍" : ""}</td>
+                          {personenGesorteerd.map((p, pi) => <td key={p.id} style={{ ...cel, color: parseFloat(r[`lft_${p.id}`]) >= p.pensioenLeeftijd ? KLEUREN[pi % KLEUREN.length] : "#4a6a7e" }}>{r[`lft_${p.id}`]}</td>)}
+                          <td style={cel}>€ {r.pensioenBruto.toLocaleString("nl-NL")}</td>
+                          <td style={cel}>€ {r.aowBruto.toLocaleString("nl-NL")}</td>
+                          <td style={{ ...cel, color: r.spaargeld > 0 ? "#4caf8a" : "#4a6a7e" }}>{r.spaargeld > 0 ? `€ ${r.spaargeld.toLocaleString("nl-NL")}` : "—"}</td>
+                          <td style={{ ...cel, color: r.woning > 0 ? "#4caf8a" : "#4a6a7e" }}>{r.woning > 0 ? `€ ${r.woning.toLocaleString("nl-NL")}` : "—"}</td>
+                          <td style={{ ...cel, color: "#c9a84c" }}>€ {r.totalBrutoMaand.toLocaleString("nl-NL")}</td>
+                          <td style={{ ...cel, color: "#4caf8a", fontWeight: 600 }}>€ {r.totalNettoMaand.toLocaleString("nl-NL")}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </Section>}
+      </div>
+    </div>
+  );
+}
+
+// ─── TijdlijnMoment ───────────────────────────────────────────────────────────
+function TijdlijnMoment({ moment, mi, personenGesorteerd, KLEUREN }) {
+  const [open, setOpen] = useState(mi === 0);
+  const kleur = KLEUREN[mi % KLEUREN.length];
+  const { data } = moment;
+
+  // Groepeer pensioen+aow per eigenaar, vermogen apart
+  const perEigenaar = {};
+  data.items.filter(x => x.type !== "vermogen").forEach(item => {
+    const key = item.eigenaar || "Algemeen";
+    if (!perEigenaar[key]) perEigenaar[key] = { items: [], eigenaarIdx: item.eigenaarIdx };
+    perEigenaar[key].items.push(item);
+  });
+  const vermogenItems = data.items.filter(x => x.type === "vermogen");
+
+  return (
+    <div style={{ marginBottom: 12, position: "relative" }}>
+      <div style={{ position: "absolute", left: -20, top: 18, width: 12, height: 12, borderRadius: "50%", background: open ? kleur : "#2a4a5e", border: `2px solid ${kleur}`, transition: "background 0.2s" }} />
+
+      <button onClick={() => setOpen(!open)} style={{
+        width: "100%", textAlign: "left", background: open ? "#1a2d3d" : "#111d26",
+        border: `1px solid ${open ? kleur + "66" : "#2a4a5e"}`,
+        borderRadius: open ? "10px 10px 0 0" : 10,
+        padding: "14px 18px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center",
+        transition: "all 0.2s",
+      }}>
+        <div>
+          <div style={{ color: kleur, fontSize: 14, fontWeight: 700, marginBottom: 2 }}>{open ? "▼ " : "▶ "}Vanaf {moment.jaar}</div>
+          <div style={{ color: "#7a9bb0", fontSize: 12 }}>{moment.leeftijdsLabels}</div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ color: "#4caf8a", fontSize: 20, fontWeight: 700 }}>€ {data.totNettoMnd.toLocaleString("nl-NL")}</div>
+          <div style={{ color: "#7a9bb0", fontSize: 11 }}>netto per maand</div>
+        </div>
+      </button>
+
+      {open && (
+        <div style={{ background: "#1a2d3d", border: `1px solid ${kleur}44`, borderTop: "none", borderRadius: "0 0 10px 10px", padding: "0 18px 18px" }}>
+
+          {/* Per persoon: AOW + pensioenen */}
+          {Object.entries(perEigenaar).map(([eigenaar, groep]) => {
+            const pi = groep.eigenaarIdx;
+            const ec = pi >= 0 ? KLEUREN[pi % KLEUREN.length] : "#7a9bb0";
+            const aowItems      = groep.items.filter(x => x.type === "aow");
+            const pensioenItems = groep.items.filter(x => x.type === "pensioen");
+            const subtotaal     = groep.items.reduce((s, x) => s + x.bedragJr, 0);
+            return (
+              <div key={eigenaar} style={{ marginTop: 16 }}>
+                <div style={{ color: ec, fontSize: 12, fontWeight: 600, marginBottom: 10, paddingBottom: 6, borderBottom: `1px solid ${ec}22` }}>
+                  {pi === 0 ? "👤" : "👥"} {eigenaar}
+                </div>
+                {aowItems.map((item, i) => (
+                  <RegelItem key={`aow${i}`} label="AOW" sublabel="Sociale Verzekeringsbank" bedrag={item.bedragJr} kleur="#5b9bd5" tag="bruto" />
+                ))}
+                {pensioenItems.length > 0 && (
+                  <div style={{ color: "#7a9bb0", fontSize: 11, margin: "8px 0 4px" }}>{pensioenItems.length} pensioen{pensioenItems.length > 1 ? "en" : ""}</div>
+                )}
+                {pensioenItems.map((item, i) => (
+                  <RegelItem key={`pen${i}`} label={item.naam} bedrag={item.bedragJr} kleur="#e8dcc8" tag="bruto" />
+                ))}
+              </div>
+            );
+          })}
+
+          {/* Vermogen — apart blok, duidelijk netto gelabeld */}
+          {vermogenItems.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ color: "#4caf8a", fontSize: 12, fontWeight: 600, marginBottom: 10, paddingBottom: 6, borderBottom: "1px solid #4caf8a22" }}>
+                💰 Vermogen inzetten
+              </div>
+              {vermogenItems.map((item, i) => (
+                <RegelItem key={`verm${i}`} label={item.naam} sublabel="Netto — geen belasting over berekend" bedrag={item.bedragJr} kleur="#4caf8a" tag="netto" />
               ))}
             </div>
           )}
 
-          <div style={{ background: "#1a2d3d", borderRadius: 12, padding: 18, marginBottom: 20 }}>
-            <p style={{ margin: "0 0 12px", color: "#7a9bb0", fontSize: 11 }}>X-as = leeftijd {hoofdpersoon?.naam}. Verticale lijnen = inkomensmomenten.</p>
-            <ResponsiveContainer width="100%" height={280}>
-              <LineChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#2a4a5e" />
-                <XAxis dataKey="leeftijd" stroke="#7a9bb0" tick={{ fontSize: 11 }} />
-                <YAxis stroke="#7a9bb0" tick={{ fontSize: 11 }} tickFormatter={v=>`€${(v/1000).toFixed(0)}k`} />
-                <Tooltip content={({ active, payload, label }) => {
-                  if (!active || !payload?.length) return null;
-                  const rij = chartData.find(r => r.leeftijd === label);
-                  return (
-                    <div style={{ background: "#0f1923", border: "1px solid #2a4a5e", borderRadius: 8, padding: "10px 14px", fontSize: 12 }}>
-                      <div style={{ marginBottom: 6, borderBottom: "1px solid #2a4a5e", paddingBottom: 4 }}>
-                        {personen.map((p, pi) => (
-                          <div key={p.id} style={{ color: KLEUREN[pi % KLEUREN.length] }}>
-                            {p.naam}: {rij?.[`lft_${p.id}`]?.toFixed(1)} jr
-                            {rij?.[`lft_${p.id}`] >= p.pensioenLeeftijd ? " ✓" : " (werkt nog)"}
-                          </div>
-                        ))}
-                      </div>
-                      {payload.map(e => <div key={e.dataKey} style={{ color: e.color }}>€ {Number(e.value).toLocaleString("nl-NL")} — {e.name}</div>)}
-                    </div>
-                  );
-                }} />
-                <Legend />
-                {/* Referentielijnen per inkomensmoment */}
-                {inkomensMomenten.map((m, i) => (
-                  <ReferenceLine key={i} x={m.leeftijd} stroke={m.kleur} strokeDasharray="4 2"
-                    label={{ value: m.label, position: "top", fill: m.kleur, fontSize: 10 }} />
-                ))}
-                <Line type="monotone" dataKey="totalBruto" name="Bruto totaal" stroke="#c9a84c" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="totalNetto" name="Netto totaal" stroke="#4caf8a" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="aowBruto" name="AOW totaal" stroke="#5b9bd5" strokeWidth={1} dot={false} strokeDasharray="4 2" />
-                {personen.map((p, pi) => (
-                  <Line key={p.id} type="monotone" dataKey={`pen_${p.id}`} name={`Pensioen ${p.naam}`} stroke={KLEUREN[pi % KLEUREN.length]} strokeWidth={1} dot={false} strokeDasharray="6 3" />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
+          {/* Totaalregel */}
+          <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px solid ${kleur}33` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+              <span style={{ color: "#c9a84c", fontSize: 13 }}>Totaal pensioen + AOW</span>
+              <span style={{ color: "#c9a84c", fontSize: 13 }}>€ {data.totBrutoMnd.toLocaleString("nl-NL")} bruto/mnd</span>
+            </div>
+            {(data.spaargeld > 0 || data.woning > 0) && (
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ color: "#4caf8a", fontSize: 13 }}>Vermogen (netto)</span>
+                <span style={{ color: "#4caf8a", fontSize: 13 }}>+ € {Math.round((data.spaargeld + data.woning) / 12).toLocaleString("nl-NL")}/mnd</span>
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, paddingTop: 8, borderTop: `1px solid ${kleur}22` }}>
+              <div>
+                <div style={{ color: "#7a9bb0", fontSize: 11 }}>Dit is omgerekend:</div>
+                {(data.spaargeld > 0 || data.woning > 0) && (
+                  <div style={{ color: "#7a9bb0", fontSize: 10 }}>Zonder vermogen: € {data.totNettoMndZonderVermogen.toLocaleString("nl-NL")}/mnd</div>
+                )}
+              </div>
+              <div style={{ color: "#4caf8a", fontSize: 20, fontWeight: 700 }}>€ {data.totNettoMnd.toLocaleString("nl-NL")} netto/mnd</div>
+            </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
-          {/* Tabel */}
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: "#1a2d3d" }}>
-                  {personen.map((p, pi) => <th key={p.id} style={{ ...th, color: KLEUREN[pi % KLEUREN.length] }}>{p.naam} lft</th>)}
-                  <th style={th}>Jaar</th>
-                  <th style={th}>Pensioen/jr</th>
-                  <th style={th}>AOW/jr</th>
-                  <th style={th}>Spaar/jr</th>
-                  <th style={th}>Woning/jr</th>
-                  <th style={th}>Bruto/mnd</th>
-                  <th style={th}>Netto/mnd</th>
-                  <th style={th}>Situatie</th>
-                </tr>
-              </thead>
-              <tbody>
-                {chartData.map((r, i) => {
-                  const isStap = inkomensMomenten.some(m => m.leeftijd === r.leeftijd) && i > 0;
-                  return (
-                    <tr key={i} style={{ background: isStap ? "#1a2d1a" : i % 2 === 0 ? "#111d26" : "#0f1923", borderTop: isStap ? "2px solid #4caf8a55" : undefined }}>
-                      {personen.map((p, pi) => (
-                        <td key={p.id} style={{ ...cel, color: KLEUREN[pi % KLEUREN.length], fontWeight: r[`lft_${p.id}`] >= p.pensioenLeeftijd && r[`lft_${p.id}`] < p.pensioenLeeftijd + 1 ? 700 : 400 }}>
-                          {r[`lft_${p.id}`]?.toFixed(1)}
-                        </td>
-                      ))}
-                      <td style={cel}>{r.jaar}</td>
-                      <td style={cel}>€ {r.pensioenBruto.toLocaleString("nl-NL")}</td>
-                      <td style={cel}>€ {r.aowBruto.toLocaleString("nl-NL")}</td>
-                      <td style={cel}>€ {r.spaargeld.toLocaleString("nl-NL")}</td>
-                      <td style={cel}>€ {r.woning.toLocaleString("nl-NL")}</td>
-                      <td style={{ ...cel, color: "#c9a84c" }}>€ {r.totalBrutoMaand.toLocaleString("nl-NL")}</td>
-                      <td style={{ ...cel, color: "#4caf8a", fontWeight: 600 }}>€ {r.totalNettoMaand.toLocaleString("nl-NL")}</td>
-                      <td style={{ ...cel, fontSize: 11, color: "#7a9bb0" }}>
-                        {r.aantalMetPensioen === personen.length ? "allen pensioen" : r.aantalMetPensioen === 1 ? "1 met pensioen" : "—"}
-                        {r.aantalMetAow > 0 ? ` · ${r.aantalMetAow}× AOW` : ""}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </Section>}
+function RegelItem({ label, sublabel, bedrag, kleur, tag }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #2a4a5e22" }}>
+      <div>
+        <div style={{ color: kleur, fontSize: 13 }}>{label}</div>
+        {sublabel && <div style={{ color: "#4a6a7e", fontSize: 11 }}>{sublabel}</div>}
+      </div>
+      <div style={{ textAlign: "right" }}>
+        <div style={{ color: "#e8dcc8", fontSize: 13 }}>€ {bedrag.toLocaleString("nl-NL")}</div>
+        <div style={{ color: "#4a6a7e", fontSize: 11 }}>{tag} per jaar</div>
       </div>
     </div>
   );
@@ -615,7 +726,7 @@ export default function PensioenApp() {
 
 // ─── PensioenRij ──────────────────────────────────────────────────────────────
 function PensioenRij({ p, alle, setPensioenen, kleur }) {
-  function update(veld, waarde) { setPensioenen(alle.map(x => x.id === p.id ? { ...x, [veld]: waarde } : x)); }
+  const update = (veld, waarde) => setPensioenen(alle.map(x => x.id === p.id ? { ...x, [veld]: waarde } : x));
   return (
     <div style={{ background: "#111d26", border: `1px solid ${kleur}33`, borderRadius: 10, padding: 14, marginBottom: 10 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
@@ -624,7 +735,9 @@ function PensioenRij({ p, alle, setPensioenen, kleur }) {
             <span>{p.type === "bankspaar" ? "🏦" : p.type === "lijfrente" ? "📋" : "🏛️"}</span>
             <input value={p.naam} onChange={e => update("naam", e.target.value)} style={{ ...inp, maxWidth: 280 }} />
           </div>
-          {p.herkenning && <div style={{ fontSize: 11, color: "#4a6a7e", marginLeft: 24 }}>#{p.herkenning}{p.standPer ? ` · ${p.standPer}` : ""}</div>}
+          <div style={{ fontSize: 11, color: "#4a6a7e", marginLeft: 24 }}>
+            {p.herkenning && `#${p.herkenning} · `}start lft {p.startLeeftijd}{p.totLeeftijd ? ` · stopt lft ${p.totLeeftijd}` : " · levenslang"}{p.standPer ? ` · ${p.standPer}` : ""}
+          </div>
         </div>
         <button onClick={() => setPensioenen(alle.filter(x => x.id !== p.id))} style={{ background: "#c0392b22", border: "1px solid #c0392b44", color: "#e74c3c", padding: "3px 9px", borderRadius: 6, cursor: "pointer", marginLeft: 10 }}>✕</button>
       </div>
@@ -637,6 +750,7 @@ function PensioenRij({ p, alle, setPensioenen, kleur }) {
           </select>
         </div>
         <Field label="Startleeftijd" value={p.startLeeftijd} onChange={v => update("startLeeftijd", +v)} type="number" />
+        <Field label="Stopt leeftijd (leeg=levenslang)" value={p.totLeeftijd ?? ""} onChange={v => update("totLeeftijd", v === "" ? null : +v)} type="number" />
         {p.type === "bankspaar"
           ? <><Field label="Saldo (€)" value={p.saldo??0} onChange={v => update("saldo", +v)} type="number" /><Field label="Rente (%)" value={p.rente??2} onChange={v => update("rente", +v)} type="number" /></>
           : <Field label="Bruto/jr (€)" value={p.bruto_jaar??0} onChange={v => update("bruto_jaar", +v)} type="number" />
@@ -646,16 +760,9 @@ function PensioenRij({ p, alle, setPensioenen, kleur }) {
   );
 }
 
-// ─── Herbruikbare componenten ─────────────────────────────────────────────────
-function Section({ title, children }) {
-  return <div><h2 style={{ color: "#c9a84c", fontSize: 18, marginBottom: 20, paddingBottom: 10, borderBottom: "1px solid #2a4a5e" }}>{title}</h2>{children}</div>;
-}
-function Grid({ children }) {
-  return <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(185px,1fr))", gap: 12, marginBottom: 12 }}>{children}</div>;
-}
-function Field({ label, value, onChange, type = "text" }) {
-  return <div><label style={lbl}>{label}</label><input type={type} value={value} onChange={e => onChange(e.target.value)} style={inp} /></div>;
-}
+function Section({ title, children }) { return <div><h2 style={{ color: "#c9a84c", fontSize: 18, marginBottom: 20, paddingBottom: 10, borderBottom: "1px solid #2a4a5e" }}>{title}</h2>{children}</div>; }
+function Grid({ children }) { return <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(185px,1fr))", gap: 12, marginBottom: 12 }}>{children}</div>; }
+function Field({ label, value, onChange, type = "text" }) { return <div><label style={lbl}>{label}</label><input type={type} value={value} onChange={e => onChange(e.target.value)} style={inp} /></div>; }
 function KPI({ label, value, kleur }) {
   return (
     <div style={{ background: "#0f1923", borderRadius: 8, padding: "10px 14px", border: `1px solid ${kleur}44` }}>
