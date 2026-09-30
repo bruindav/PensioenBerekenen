@@ -1,4 +1,9 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-5: banksparen/beleggingsrecht en koopsommen invoeren per persoon.
+//        Banksparen: saldo nu (+ evt. verwachte waarde van de aanbieder), inleg en rendement
+//        tot de startdatum; daarna een uitkering over een looptijd (annuïteit).
+//        Koopsom: bedrag + uitkering uit de offerte (of een schatting). Beide tellen
+//        als bruto inkomen in box 1 en gaan dus mee in belasting en Zvw.
 // fix-4: Help-, Privacy- en Disclaimerpagina (src/InfoPaginas.jsx), bereikbaar via
 //        de ❓ Help-knop, de voettekst en #help / #privacy / #disclaimer in de URL
 // fix-3: leefsituatie (samenwonend/alleenstaand) per persoon uit het XML-overzicht
@@ -18,7 +23,7 @@ import { useState, useMemo, useEffect } from "react";
 import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-4";
+const FIX_NR = "fix-5";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -102,6 +107,48 @@ const maandenVan = (lftJaren) => Math.round(lftJaren * 12);
 const absNaarLabel = (abs) => `${MAANDEN[((abs % 12) + 12) % 12]} ${Math.floor(abs / 12)}`;
 const lftLabel = (mnd) => { const j = Math.floor(mnd / 12), m = mnd % 12; return `${j}j${m > 0 ? `${m}m` : ""}`; };
 const datumBijLeeftijd = (p, lftJaren) => absNaarLabel(gebAbs(p) + maandenVan(lftJaren));
+
+// ─── Banksparen & koopsommen (fix-5) ──────────────────────────────────────────
+const NU_ABS = JAAR_NU * 12 + new Date().getMonth();
+const isProduct = (p) => p.type === "bankspaar" || p.type === "koopsom";
+
+// Jaarlijkse annuïteit: kapitaal gelijkmatig opnemen over n jaar tegen rente r
+function annuiteit(kapitaal, rentePct, jaren) {
+  if (!kapitaal || !jaren || jaren <= 0) return 0;
+  const r = (rentePct ?? 0) / 100;
+  return r === 0 ? kapitaal / jaren : (kapitaal * r) / (1 - Math.pow(1 + r, -jaren));
+}
+
+// Verwacht kapitaal op de startdatum van de uitkering
+function kapitaalBijStart(p, persoon) {
+  const startAbs = gebAbs(persoon) + maandenVan(p.startLeeftijd ?? 67);
+  const r = (p.rendement ?? 0) / 100;
+  const inleg = p.inlegPerJaar ?? 0;
+  // Vertrekpunt: verwachte waarde van de aanbieder (als ingevuld), anders huidig saldo
+  let basisAbs = NU_ABS, basis = p.saldo ?? 0;
+  if (p.verwachteWaarde > 0 && p.verwachtJaar > 0) { basis = p.verwachteWaarde; basisAbs = p.verwachtJaar * 12; }
+  const jaren = Math.max(0, (startAbs - basisAbs) / 12);
+  const groei = Math.pow(1 + r, jaren);
+  const inlegWaarde = r === 0 ? inleg * jaren : inleg * (groei - 1) / r;
+  // Inleg tot het peiljaar van de verwachte waarde zit daar al in
+  return Math.round(basis * groei + (p.verwachteWaarde > 0 ? 0 : inlegWaarde));
+}
+
+// Geeft { bedragJr, kapitaal, totLeeftijd, geschat } voor een product
+function productUitkering(p, persoon) {
+  if (p.type === "bankspaar") {
+    const looptijd = p.looptijd ?? 20;
+    const kapitaal = kapitaalBijStart(p, persoon);
+    return { bedragJr: annuiteit(kapitaal, p.rente ?? 2, looptijd), kapitaal, totLeeftijd: (p.startLeeftijd ?? 67) + looptijd, geschat: true };
+  }
+  if (p.type === "koopsom") {
+    const looptijd = p.looptijd > 0 ? p.looptijd : null;             // leeg/0 = levenslang
+    if (p.uitkeringMnd > 0) return { bedragJr: p.uitkeringMnd * 12, kapitaal: p.koopsom ?? 0, totLeeftijd: looptijd ? p.startLeeftijd + looptijd : null, geschat: false };
+    const jaren = looptijd ?? Math.max(5, 90 - (p.startLeeftijd ?? 67)); // levenslang: schatting tot 90
+    return { bedragJr: annuiteit(p.koopsom ?? 0, p.rente ?? 2, jaren), kapitaal: p.koopsom ?? 0, totLeeftijd: looptijd ? p.startLeeftijd + looptijd : null, geschat: true };
+  }
+  return { bedragJr: p.bruto_jaar ?? 0, kapitaal: 0, totLeeftijd: p.totLeeftijd, geschat: false };
+}
 
 // Bereken de verwachte AOW bij een gegeven pensioenleeftijd
 // - bij normale leeftijd (>= aowStartLeeftijd): volledige AOW
@@ -387,12 +434,11 @@ export default function PensioenApp() {
       let persoonPensioenBruto = 0;
 
       pensioenen.filter(p => p.eigenaarId === persoon.id).forEach((p) => {
+        const pu = productUitkering(p, persoon);                          // fix-5
         const gestart = lftM >= maandenVan(p.startLeeftijd);
-        const gestopt = p.totLeeftijd != null && lftM >= maandenVan(p.totLeeftijd);
+        const gestopt = pu.totLeeftijd != null && lftM >= maandenVan(pu.totLeeftijd);
         if (gestart && !gestopt) {
-          const bedrag = p.type === "bankspaar"
-            ? (() => { const r = (p.rente ?? 2) / 100; return r === 0 ? (p.saldo ?? 0) / 20 : ((p.saldo ?? 0) * r) / (1 - Math.pow(1 + r, -20)); })()
-            : (p.bruto_jaar ?? 0);
+          const bedrag = pu.bedragJr;
           persoonPensioenBruto += bedrag;
           items.push({ type: "pensioen", naam: p.naam, bedragJr: Math.round(bedrag), eigenaar: persoon.naam, eigenaarIdx, isNetto: false });
         }
@@ -648,12 +694,25 @@ export default function PensioenApp() {
         {/* PENSIOENEN */}
         {tab === "pensioenen" && <Section title="Pensioenen & producten">
           {personenGesorteerd.map((persoon, pi) => {
-            const eigenPens = pensioenen.filter(p => p.eigenaarId === persoon.id);
+            const eigenPens = pensioenen.filter(p => p.eigenaarId === persoon.id && !isProduct(p));
+            const eigenProd = pensioenen.filter(p => p.eigenaarId === persoon.id && isProduct(p));
+            const kleur = KLEUREN[pi % KLEUREN.length];
+            const nieuw = (type) => setPensioenen([...pensioenen, type === "bankspaar"
+              ? { id: `bankspaar_${Date.now()}`, naam: "Banksparen", type, eigenaarId: persoon.id, saldo: 0, inlegPerJaar: 0, rendement: 2, verwachteWaarde: 0, verwachtJaar: 0, startLeeftijd: persoon.aowStartLeeftijd ?? 67, looptijd: 20, rente: 2 }
+              : { id: `koopsom_${Date.now()}`, naam: "Koopsom", type, eigenaarId: persoon.id, koopsom: 0, uitkeringMnd: 0, startLeeftijd: persoon.aowStartLeeftijd ?? 67, looptijd: 0, rente: 2 }]);
+            const knop = { background: `${kleur}22`, border: `1px solid ${kleur}44`, color: kleur, padding: "7px 14px", borderRadius: 8, cursor: "pointer", fontSize: 12 };
             return (
               <div key={persoon.id} style={{ marginBottom: 28 }}>
-                <h3 style={{ color: KLEUREN[pi % KLEUREN.length], fontSize: 14, marginBottom: 12 }}>{pi === 0 ? "👤" : "👥"} {persoon.naam} · geb. {MAANDEN[(persoon.geboortemaand ?? 1) - 1]} {persoon.geboortejaar}</h3>
+                <h3 style={{ color: kleur, fontSize: 14, marginBottom: 12 }}>{pi === 0 ? "👤" : "👥"} {persoon.naam} · geb. {MAANDEN[(persoon.geboortemaand ?? 1) - 1]} {persoon.geboortejaar}</h3>
                 {eigenPens.length === 0 ? <div style={{ padding: 16, color: "#4a6a7e", fontSize: 13, textAlign: "center" }}>Geen pensioenen</div>
-                  : eigenPens.map(p => <PensioenRij key={p.id} p={p} alle={pensioenen} setPensioenen={setPensioenen} kleur={KLEUREN[pi % KLEUREN.length]} />)}
+                  : eigenPens.map(p => <PensioenRij key={p.id} p={p} alle={pensioenen} setPensioenen={setPensioenen} kleur={kleur} />)}
+                {/* fix-5: banksparen & koopsommen */}
+                <div style={{ color: "#7a9bb0", fontSize: 12, fontWeight: 600, margin: "18px 0 10px" }}>🏦 Banksparen, beleggingsrechten & koopsommen</div>
+                {eigenProd.map(p => <ProductRij key={p.id} p={p} persoon={persoon} alle={pensioenen} setPensioenen={setPensioenen} kleur={kleur} />)}
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button onClick={() => nieuw("bankspaar")} style={knop}>+ Banksparen / beleggen</button>
+                  <button onClick={() => nieuw("koopsom")} style={knop}>+ Koopsom</button>
+                </div>
               </div>
             );
           })}
@@ -938,17 +997,60 @@ function PensioenRij({ p, alle, setPensioenen, kleur }) {
         <div><label style={lbl}>Type</label>
           <select value={p.type} onChange={e => update("type", e.target.value)} style={inp}>
             <option value="pensioen">Pensioenfonds</option>
-            <option value="bankspaar">Bankspaarrekening</option>
             <option value="lijfrente">Lijfrente</option>
           </select>
         </div>
         <Field label="Startleeftijd" value={p.startLeeftijd} onChange={v => update("startLeeftijd", +v)} type="number" />
         <Field label="Stopt leeftijd (leeg=levenslang)" value={p.totLeeftijd ?? ""} onChange={v => update("totLeeftijd", v === "" ? null : +v)} type="number" />
-        {p.type === "bankspaar"
-          ? <><Field label="Saldo (€)" value={p.saldo??0} onChange={v => update("saldo", +v)} type="number" /><Field label="Rente (%)" value={p.rente??2} onChange={v => update("rente", +v)} type="number" /></>
-          : <Field label="Bruto/jr (€)" value={p.bruto_jaar??0} onChange={v => update("bruto_jaar", +v)} type="number" />
-        }
+        <Field label="Bruto/jr (€)" value={p.bruto_jaar??0} onChange={v => update("bruto_jaar", +v)} type="number" />
       </Grid>
+    </div>
+  );
+}
+
+// ─── fix-5: invoer banksparen / koopsom ───────────────────────────────────────
+function ProductRij({ p, persoon, alle, setPensioenen, kleur }) {
+  const update = (veld, waarde) => setPensioenen(alle.map(x => x.id === p.id ? { ...x, [veld]: waarde } : x));
+  const num = (v) => (v === "" ? 0 : +v);
+  const pu = productUitkering(p, persoon);
+  const isBank = p.type === "bankspaar";
+  const eind = pu.totLeeftijd != null ? `tot ${datumBijLeeftijd(persoon, pu.totLeeftijd)}` : "levenslang";
+  return (
+    <div style={{ background: "#111d26", border: `1px solid ${kleur}33`, borderRadius: 10, padding: 14, marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flex: 1, minWidth: 0 }}>
+          <span>{isBank ? "🏦" : "💶"}</span>
+          <input value={p.naam} onChange={e => update("naam", e.target.value)} style={{ ...inp, maxWidth: 280 }} />
+        </div>
+        <button onClick={() => setPensioenen(alle.filter(x => x.id !== p.id))} style={{ background: "#c0392b22", border: "1px solid #c0392b44", color: "#e74c3c", padding: "3px 9px", borderRadius: 6, cursor: "pointer" }}>✕</button>
+      </div>
+      <Grid>
+        <div><label style={lbl}>Soort</label>
+          <select value={p.type} onChange={e => update("type", e.target.value)} style={inp}>
+            <option value="bankspaar">Banksparen / beleggingsrecht</option>
+            <option value="koopsom">Koopsom (lijfrente-uitkering)</option>
+          </select>
+        </div>
+        {isBank ? <>
+          <Field label="Saldo nu (€)" value={p.saldo ?? 0} onChange={v => update("saldo", num(v))} type="number" />
+          <Field label="Inleg per jaar (€)" value={p.inlegPerJaar ?? 0} onChange={v => update("inlegPerJaar", num(v))} type="number" />
+          <Field label="Verwacht rendement (%/jr)" value={p.rendement ?? 0} onChange={v => update("rendement", num(v))} type="number" />
+          <Field label="Verwachte waarde aanbieder (€)" value={p.verwachteWaarde ?? 0} onChange={v => update("verwachteWaarde", num(v))} type="number" />
+          <Field label="…in jaar" value={p.verwachtJaar ?? 0} onChange={v => update("verwachtJaar", num(v))} type="number" />
+        </> : <>
+          <Field label="Koopsom (€)" value={p.koopsom ?? 0} onChange={v => update("koopsom", num(v))} type="number" />
+          <Field label="Uitkering uit offerte (€/mnd bruto)" value={p.uitkeringMnd ?? 0} onChange={v => update("uitkeringMnd", num(v))} type="number" />
+        </>}
+        <Field label="Uitkering vanaf leeftijd" value={p.startLeeftijd} onChange={v => update("startLeeftijd", num(v))} type="number" />
+        <Field label={isBank ? "Looptijd uitkering (jaren)" : "Looptijd (jaren, 0 = levenslang)"} value={p.looptijd ?? (isBank ? 20 : 0)} onChange={v => update("looptijd", num(v))} type="number" />
+        {(isBank || !(p.uitkeringMnd > 0)) && <Field label="Rente tijdens uitkering (%)" value={p.rente ?? 2} onChange={v => update("rente", num(v))} type="number" />}
+      </Grid>
+      <div style={{ fontSize: 12, color: "#b8c8d4", background: "#1a2d3d", borderRadius: 8, padding: "8px 12px" }}>
+        {isBank && <>Verwacht kapitaal op {datumBijLeeftijd(persoon, p.startLeeftijd)}: <strong style={{ color: kleur }}>€ {pu.kapitaal.toLocaleString("nl-NL")}</strong> → </>}
+        uitkering <strong style={{ color: "#c9a84c" }}>€ {Math.round(pu.bedragJr / 12).toLocaleString("nl-NL")}/mnd bruto</strong> vanaf {datumBijLeeftijd(persoon, p.startLeeftijd)}, {eind}
+        {pu.geschat && <span style={{ color: "#4a6a7e" }}> · schatting{!isBank && pu.totLeeftijd == null ? " (levenslang gerekend tot 90 jaar)" : ""}</span>}
+        <div style={{ color: "#4a6a7e", fontSize: 11, marginTop: 2 }}>Telt als bruto inkomen (box 1): belasting en Zvw worden ingehouden.</div>
+      </div>
     </div>
   );
 }

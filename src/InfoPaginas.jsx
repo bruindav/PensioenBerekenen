@@ -1,5 +1,6 @@
 // PENSIOEN PLANNER - src/InfoPaginas.jsx
 // fix-4: nieuwe pagina's Help, Privacy en Disclaimer
+// fix-5: help uitgebreid met banksparen en koopsommen
 
 const BIJGEWERKT = "september 2026";
 const REPO_URL = "https://github.com/bruindav/pensioenberekenen";
@@ -69,9 +70,14 @@ export function HelpPagina({ naar }) {
       <h2 style={s.h2}>4. Pensioenen</h2>
       <p>
         Hier staan alle ingelezen regelingen. Je kunt bedragen, start- en stopleeftijd aanpassen, regelingen
-        verwijderen of er handmatig een toevoegen — bijvoorbeeld een <strong>bankspaarrekening</strong>: vul saldo en
-        rente in, de app rekent dan een uitkering over 20 jaar uit.
+        verwijderen of er handmatig een toevoegen.
       </p>
+      <p>Daaronder voeg je per persoon <strong>banksparen, beleggingsrechten en koopsommen</strong> toe:</p>
+      <ul style={s.ul}>
+        <li><strong>Banksparen / beleggingsrecht</strong> — vul het huidige saldo in, eventueel je jaarlijkse inleg en een verwacht rendement. Geeft je aanbieder een verwachte waarde (bijv. "in 2031 € 38.230"), vul die en het jaar in; de app rekent dan vanaf dat bedrag verder. Kies vanaf welke leeftijd en hoeveel jaar het uitgekeerd wordt (een lijfrente minimaal 5 jaar).</li>
+        <li><strong>Koopsom</strong> — het bedrag waarmee je een uitkering koopt. Vul de maanduitkering uit je offerte in; zonder offerte maakt de app een schatting.</li>
+      </ul>
+      <p>Uitkeringen hieruit tellen als bruto inkomen, net als je pensioen: er gaat belasting en Zvw vanaf.</p>
 
       <h2 style={s.h2}>5. Vermogen</h2>
       <p>
@@ -217,6 +223,7 @@ export function DisclaimerPagina() {
         <li>Het verschil tussen maandelijkse inhouding (loonheffing) en de definitieve aanslag inkomstenbelasting.</li>
         <li>Nabestaandenpensioen, de invloed van de Wet toekomst pensioenen en wijzigingen in je opbouw ná de datum van je overzicht.</li>
         <li>De AOW-berekening bij eerder stoppen is een benadering (opbouw per jaar tot je pensioenleeftijd).</li>
+        <li>Rendementen van banksparen en beleggingsrechten zijn aannames; beleggingen kunnen ook minder opleveren. Koopsom-uitkeringen zonder offerte zijn schattingen.</li>
       </ul>
 
       <h2 style={s.h2}>3. Juistheid van gegevens</h2>
