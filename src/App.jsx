@@ -1,4 +1,6 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-3: leefsituatie (samenwonend/alleenstaand) per persoon uit het XML-overzicht
+//        (LevensSituatie) en instelbaar; bepaalt AOW-bedrag en alleenstaande-ouderenkorting
 // fix-2: - berekening per maand i.p.v. per jaar (geboortemaand uit het XML-overzicht);
 //          inkomensmomenten vallen nu op de juiste maand (bv. AOW op 67j3m)
 //        - tab "Profiel" hernoemd naar "Mijn situatie"
@@ -13,7 +15,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-2";
+const FIX_NR = "fix-3";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -203,6 +205,8 @@ function parseerXML(tekst) {
   const gbStr = t(doc, "Geboortedatum");
   const geboortejaar = gbStr ? parseInt(gbStr.split("-")[0]) : null;
   const geboortemaand = gbStr ? parseInt(gbStr.split("-")[1]) || null : null;
+  const levensSituatie = t(doc, "LevensSituatie");
+  const samenwonend = levensSituatie ? !/alleen/i.test(levensSituatie) : null;
   const polisFirstSeen = {}, polisLastSeen = {};
   let aowSamen = 0, aowAlleen = 0, aowStart = 67.25;
   const blokken = g(doc, "OuderdomsPensioen");
@@ -230,7 +234,7 @@ function parseerXML(tekst) {
     totLeeftijd: polisLastSeen[h].isLevenslang ? null : polisLastSeen[h].totLftNum,
     standPer: polisFirstSeen[h].standPer,
   }));
-  return { pensioenen: polissen, aow: { samen: aowSamen, alleen: aowAlleen, startLeeftijd: aowStart }, naam, geboortejaar, geboortemaand };
+  return { pensioenen: polissen, aow: { samen: aowSamen, alleen: aowAlleen, startLeeftijd: aowStart }, naam, geboortejaar, geboortemaand, samenwonend };
 }
 
 function parseerBestand(inhoud, naam) {
@@ -295,10 +299,10 @@ export default function PensioenApp() {
           const bestaand = personen.find(p => p.naam === result.naam);
           if (bestaand) {
             eigenaarId = bestaand.id;
-            nieuwePersonen = nieuwePersonen.map(p => p.id === eigenaarId ? { ...p, geboortejaar: result.geboortejaar ?? p.geboortejaar, geboortemaand: result.geboortemaand ?? p.geboortemaand, aowSamen: result.aow.samen || p.aowSamen, aowAlleen: result.aow.alleen || p.aowAlleen, aowStartLeeftijd: result.aow.startLeeftijd ?? p.aowStartLeeftijd } : p);
+            nieuwePersonen = nieuwePersonen.map(p => p.id === eigenaarId ? { ...p, geboortejaar: result.geboortejaar ?? p.geboortejaar, geboortemaand: result.geboortemaand ?? p.geboortemaand, samenwonend: result.samenwonend ?? p.samenwonend, aowSamen: result.aow.samen || p.aowSamen, aowAlleen: result.aow.alleen || p.aowAlleen, aowStartLeeftijd: result.aow.startLeeftijd ?? p.aowStartLeeftijd } : p);
           } else {
             eigenaarId = `persoon_${Date.now()}`;
-            nieuwePersonen = [...personen, { id: eigenaarId, naam: result.naam, geboortejaar: result.geboortejaar ?? 1970, geboortemaand: result.geboortemaand ?? 1, pensioenLeeftijd: result.aow.startLeeftijd ?? 67.25, aowSamen: result.aow.samen, aowAlleen: result.aow.alleen, aowStartLeeftijd: result.aow.startLeeftijd ?? 67.25 }];
+            nieuwePersonen = [...personen, { id: eigenaarId, naam: result.naam, geboortejaar: result.geboortejaar ?? 1970, geboortemaand: result.geboortemaand ?? 1, samenwonend: result.samenwonend ?? undefined, pensioenLeeftijd: result.aow.startLeeftijd ?? 67.25, aowSamen: result.aow.samen, aowAlleen: result.aow.alleen, aowStartLeeftijd: result.aow.startLeeftijd ?? 67.25 }];
           }
         } else {
           if (personen.length === 0) {
@@ -346,16 +350,19 @@ export default function PensioenApp() {
 
   const personenGesorteerd = useMemo(() => [...personen].sort((a, b) => gebAbs(a) - gebAbs(b)), [personen]);
 
+  // Leefsituatie (fix-3): expliciet ingesteld, anders: samen als er >1 persoon is
+  const isSamenwonend = (persoon) => persoon.samenwonend ?? (personen.length > 1);
+
   // ─── Rekenkern per maand (fix-2) ──────────────────────────────────────────────
   // Alle bedragen blijven jaarbedragen (bedragJr); een moment start in de maand
   // waarin de leeftijd bereikt wordt.
   function berekenMaand(abs) {
-    const isSamen = personen.length > 1;
     const items = [];
     let totPensioenBruto = 0, totAowBruto = 0, totNetto = 0, totBelasting = 0, totZvw = 0;
     const perPersoon = {};
 
     personen.forEach((persoon) => {
+      const isSamen = isSamenwonend(persoon);
       const lftM = lftMaanden(persoon, abs);
       const eigenaarIdx = personenGesorteerd.findIndex(x => x.id === persoon.id);
       let persoonPensioenBruto = 0;
@@ -525,6 +532,13 @@ export default function PensioenApp() {
                   <label style={lbl}>Geboortemaand</label>
                   <select value={persoon.geboortemaand ?? 1} onChange={e => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, geboortemaand: +e.target.value } : p))} style={inp}>
                     {MAANDEN.map((m, mi) => <option key={m} value={mi + 1}>{m}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={lbl}>Leefsituatie</label>
+                  <select value={isSamenwonend(persoon) ? "samen" : "alleen"} onChange={e => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, samenwonend: e.target.value === "samen" } : p))} style={inp}>
+                    <option value="samen">Gehuwd / samenwonend</option>
+                    <option value="alleen">Alleenstaand</option>
                   </select>
                 </div>
                 <div>
