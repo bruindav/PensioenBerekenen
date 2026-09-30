@@ -1,13 +1,16 @@
 // PENSIOEN PLANNER - src/App.jsx
-// v11: AOW automatisch berekend op basis van pensioenleeftijd:
-//      - normale leeftijd (>= aowStartLeeftijd) → volledige AOW
-//      - eerder stoppen → opgebouwd nu + resterende opbouw tot pensioenleeftijd
-//      - profiel toont verschil tussen huidige opbouw en verwachte opbouw bij gekozen leeftijd
+// fix-1: - netto-berekening bijgewerkt naar 2026-tarieven:
+//          * apart tarief voor wie de AOW-leeftijd heeft bereikt (17,85% i.p.v. 35,75% in schijf 1)
+//          * geen arbeidskorting meer op pensioen/AOW (die geldt alleen voor loon)
+//          * ouderenkorting en Zvw-bijdrage (4,85%) meegenomen
+//        - inkomensmomenten op het profiel tonen nu per moment de componenten
+//          (AOW, elk pensioen, vermogen) plus ingehouden belasting en Zvw
+// v11: AOW automatisch berekend op basis van pensioenleeftijd
 
 import { useState, useMemo, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "v11";
+const FIX_NR = "fix-1";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -39,15 +42,41 @@ async function dbSet(key, value) {
   });
 }
 
-// ─── Belasting box 1 2024 ─────────────────────────────────────────────────────
-function berekenNetto(bruto) {
-  if (bruto <= 0) return 0;
-  const schijf1 = Math.min(bruto, 75518);
-  const schijf2 = Math.max(0, bruto - 75518);
-  let bel = schijf1 * 0.3697 + schijf2 * 0.495;
-  const ahk = bruto < 24812 ? 3362 : Math.max(0, 3362 - (bruto - 24812) * 0.06095);
-  bel = Math.max(0, bel - ahk - 1982);
-  return Math.round(bruto - bel);
+// ─── Belasting box 1 2026 (fix-1) ─────────────────────────────────────────────
+// Bronnen: Belastingdienst tarieven 2026. Benadering: pensioen en AOW zijn geen loon,
+// dus geen arbeidskorting. Zvw-bijdrage wordt door SVB/pensioenuitvoerder ingehouden.
+const BEL = {
+  schijf1Grens: 38883, schijf2Grens: 78426,
+  tariefJong: [0.3575, 0.3756, 0.495],     // jonger dan AOW-leeftijd
+  tariefAOW:  [0.1785, 0.3756, 0.495],     // AOW-gerechtigd, geboren na 1946
+  ahkJong: 3115, ahkAOW: 1556, ahkAfbouwGrens: 29736,
+  ahkAfbouwJong: 0.06398, ahkAfbouwAOW: 0.03196,
+  ouderenMax: 2067, ouderenGrens: 46002, ouderenAfbouw: 0.15,
+  alleenstaandeOuderen: 540,
+  zvwPct: 0.0485, zvwMax: 79409,
+};
+
+// Geeft { netto, belasting, zvw } per jaar
+function berekenNettoDetail(bruto, aowGerechtigd = false, alleenstaand = false) {
+  if (bruto <= 0) return { netto: 0, belasting: 0, zvw: 0 };
+  const t = aowGerechtigd ? BEL.tariefAOW : BEL.tariefJong;
+  const s1 = Math.min(bruto, BEL.schijf1Grens);
+  const s2 = Math.max(0, Math.min(bruto, BEL.schijf2Grens) - BEL.schijf1Grens);
+  const s3 = Math.max(0, bruto - BEL.schijf2Grens);
+  let bel = s1 * t[0] + s2 * t[1] + s3 * t[2];
+  const ahkMax = aowGerechtigd ? BEL.ahkAOW : BEL.ahkJong;
+  const ahkAfb = aowGerechtigd ? BEL.ahkAfbouwAOW : BEL.ahkAfbouwJong;
+  let kortingen = Math.max(0, ahkMax - Math.max(0, bruto - BEL.ahkAfbouwGrens) * ahkAfb);
+  if (aowGerechtigd) {
+    kortingen += Math.max(0, BEL.ouderenMax - Math.max(0, bruto - BEL.ouderenGrens) * BEL.ouderenAfbouw);
+    if (alleenstaand) kortingen += BEL.alleenstaandeOuderen;
+  }
+  bel = Math.max(0, bel - kortingen);
+  const zvw = Math.min(bruto, BEL.zvwMax) * BEL.zvwPct;
+  return { netto: Math.round(bruto - bel - zvw), belasting: Math.round(bel), zvw: Math.round(zvw) };
+}
+function berekenNetto(bruto, aowGerechtigd = false, alleenstaand = false) {
+  return berekenNettoDetail(bruto, aowGerechtigd, alleenstaand).netto;
 }
 
 const AOW_VOLLEDIG_SAMEN  = 14379; // bruto/jr bij 100% opbouw, samenwonend
@@ -320,7 +349,7 @@ export default function PensioenApp() {
     function berekenJaar(jaar) {
       const items = [];
       let totPensioenBruto = 0, totAowBruto = 0;
-      let totNetto = 0;
+      let totNetto = 0, totBelasting = 0, totZvw = 0;
 
       personen.forEach((persoon) => {
         const lft = jaar - persoon.geboortejaar;
@@ -360,8 +389,9 @@ export default function PensioenApp() {
         }
 
         totPensioenBruto += persoonPensioenBruto;
-        // Netto per persoon: belasting over pensioen + AOW samen
-        totNetto += berekenNetto(Math.round(persoonPensioenBruto) + Math.round(persoonAowBruto));
+        // Netto per persoon: belasting + Zvw over pensioen + AOW samen (fix-1)
+        const nd = berekenNettoDetail(Math.round(persoonPensioenBruto) + Math.round(persoonAowBruto), lft >= aowStart, !isSamen);
+        totNetto += nd.netto; totBelasting += nd.belasting; totZvw += nd.zvw;
       });
 
       // Vermogen: netto — geen belasting, direct optellen
@@ -381,7 +411,7 @@ export default function PensioenApp() {
       const totBrutoMnd = Math.round((totPensioenBruto + totAowBruto) / 12);
       const totNettoMnd = Math.round(totNetto / 12);
 
-      return { totBrutoMnd, totNettoMnd, totNettoMndZonderVermogen: Math.round((totNetto - spaargeld - woning) / 12), spaargeld, woning, items };
+      return { totBrutoMnd, totNettoMnd, belastingMnd: Math.round(totBelasting / 12), zvwMnd: Math.round(totZvw / 12), totNettoMndZonderVermogen: Math.round((totNetto - spaargeld - woning) / 12), spaargeld, woning, items };
     }
 
     const momenten = [];
@@ -434,7 +464,7 @@ export default function PensioenApp() {
         if (lft >= aowStart) totAow += aowBruto;
         pp[persoon.id] = { lft: lft.toFixed(1), pensioenBruto: Math.round(pensioenBruto) };
         totPensioen += pensioenBruto;
-        totNetto += berekenNetto(Math.round(pensioenBruto) + aowBruto);
+        totNetto += berekenNetto(Math.round(pensioenBruto) + aowBruto, lft >= aowStart, !isSamen);
       });
       const lftOudste = parseFloat(pp[personenGesorteerd[0]?.id]?.lft ?? 0);
       const spaargeld = lftOudste >= vermogen.spaargeldGebruikVanaf ? vermogen.spaargeldPerJaar : 0;
@@ -547,11 +577,22 @@ export default function PensioenApp() {
               <h3 style={{ margin: "0 0 14px", color: "#c9a84c", fontSize: 14 }}>📊 Inkomensmomenten</h3>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
                 {tijdlijnData.map((m, i) => (
-                  <div key={i} style={{ background: "#111d26", border: `1px solid ${KLEUREN[i % KLEUREN.length]}44`, borderRadius: 10, padding: "12px 16px", minWidth: 170 }}>
+                  <div key={i} style={{ background: "#111d26", border: `1px solid ${KLEUREN[i % KLEUREN.length]}44`, borderRadius: 10, padding: "12px 16px", minWidth: 210 }}>
                     <div style={{ color: KLEUREN[i % KLEUREN.length], fontSize: 12, fontWeight: 600, marginBottom: 2 }}>📍 {m.jaar}</div>
                     <div style={{ color: "#7a9bb0", fontSize: 11, marginBottom: 8 }}>{m.leeftijdsLabels}</div>
-                    <div style={{ color: "#c9a84c", fontSize: 12 }}>€ {m.data.totBrutoMnd.toLocaleString("nl-NL")}/mnd bruto</div>
-                    <div style={{ color: "#4caf8a", fontSize: 16, fontWeight: 700 }}>€ {m.data.totNettoMnd.toLocaleString("nl-NL")}/mnd netto</div>
+                    {/* fix-1: componenten per inkomensmoment */}
+                    <div style={{ borderTop: "1px solid #2a4a5e", paddingTop: 6, marginBottom: 6 }}>
+                      {m.data.items.map((it, ii) => (
+                        <div key={ii} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11, color: "#b8c8d4", lineHeight: 1.6 }}>
+                          <span>{it.naam}{personen.length > 1 && it.eigenaar ? <span style={{ color: "#4a6a7e" }}> · {it.eigenaar.split(" ")[0]}</span> : null}{it.isNetto ? <span style={{ color: "#4a6a7e" }}> (netto)</span> : null}</span>
+                          <span style={{ whiteSpace: "nowrap" }}>€ {Math.round(it.bedragJr / 12).toLocaleString("nl-NL")}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", color: "#c9a84c", fontSize: 12 }}><span>Bruto</span><span>€ {m.data.totBrutoMnd.toLocaleString("nl-NL")}/mnd</span></div>
+                    <div style={{ display: "flex", justifyContent: "space-between", color: "#e07b54", fontSize: 11 }}><span>− Loonheffing</span><span>€ {m.data.belastingMnd.toLocaleString("nl-NL")}</span></div>
+                    <div style={{ display: "flex", justifyContent: "space-between", color: "#e07b54", fontSize: 11, marginBottom: 4 }}><span>− Zvw-bijdrage</span><span>€ {m.data.zvwMnd.toLocaleString("nl-NL")}</span></div>
+                    <div style={{ display: "flex", justifyContent: "space-between", color: "#4caf8a", fontSize: 16, fontWeight: 700 }}><span>Netto</span><span>€ {m.data.totNettoMnd.toLocaleString("nl-NL")}/mnd</span></div>
                   </div>
                 ))}
               </div>
