@@ -1,6 +1,7 @@
 // PENSIOEN PLANNER - src/InfoPaginas.jsx
 // fix-4: nieuwe pagina's Help, Privacy en Disclaimer
 // fix-5: help uitgebreid met banksparen en koopsommen
+// fix-6: verwijderen via 🗑-knop met bevestiging; blokken inklapbaar
 
 const BIJGEWERKT = "september 2026";
 const REPO_URL = "https://github.com/bruindav/pensioenberekenen";
@@ -109,6 +110,8 @@ export function HelpPagina({ naar }) {
 
       <h2 style={s.h2}>Gegevens bewaren en overzetten</h2>
       <ul style={s.ul}>
+        <li>Elk blok klap je in en uit door op de titel te tikken (▶/▼). Dichtgeklapt zie je een korte samenvatting.</li>
+        <li>Verwijderen gaat via <strong>🗑 Verwijderen</strong> onderin een blok; je moet dat daarna nog bevestigen.</li>
         <li>Alles wordt automatisch opgeslagen in je browser (✓ met tijdstip rechtsboven).</li>
         <li><strong>⬇ Backup</strong> slaat al je gegevens op als bestand; met <strong>⬆ Herstel</strong> zet je dat terug — handig voor een ander apparaat of browser.</li>
         <li>Wis je de browsergegevens van deze site, dan ben je je invoer kwijt. Maak dus af en toe een backup.</li>
@@ -176,7 +179,7 @@ export function PrivacyPagina() {
 
       <h2 style={s.h2}>6. Hoe lang worden gegevens bewaard?</h2>
       <p>
-        Zolang jij ze in je browser laat staan. Verwijder een persoon met ✕ bij Mijn situatie, of wis alle gegevens via
+        Zolang jij ze in je browser laat staan. Verwijder een persoon via 🗑 Verwijderen bij Mijn situatie, of wis alle gegevens via
         de browserinstellingen (site-gegevens van deze website verwijderen).
       </p>
 

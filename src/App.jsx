@@ -1,4 +1,7 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-6: - verwijderen vraagt eerst om bevestiging (VerwijderKnop i.p.v. rode ✕)
+//        - alle blokken inklapbaar (Inklapbaar), met samenvatting als ze dicht zijn
+//        - "+ Pensioen" per persoon i.p.v. één knop die altijd bij de oudste toevoegde
 // fix-5: banksparen/beleggingsrecht en koopsommen invoeren per persoon.
 //        Banksparen: saldo nu (+ evt. verwachte waarde van de aanbieder), inleg en rendement
 //        tot de startdatum; daarna een uitkering over een looptijd (annuïteit).
@@ -23,7 +26,7 @@ import { useState, useMemo, useEffect } from "react";
 import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-5";
+const FIX_NR = "fix-6";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -595,13 +598,9 @@ export default function PensioenApp() {
             </div>
           )}
           {personenGesorteerd.map((persoon, pi) => (
-            <div key={persoon.id} style={{ background: "#1a2d3d", border: `1px solid ${KLEUREN[pi % KLEUREN.length]}44`, borderRadius: 12, padding: 18, marginBottom: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-                <h3 style={{ margin: 0, color: KLEUREN[pi % KLEUREN.length], fontSize: 15 }}>
-                  {pi === 0 ? "👤 " : "👥 "}{persoon.naam}{pi === 0 && <span style={{ fontSize: 11, color: "#555", marginLeft: 8 }}>· oudste</span>}
-                </h3>
-                <button onClick={() => { setPersonen(personen.filter(p => p.id !== persoon.id)); setPensioenen(pensioenen.filter(p => p.eigenaarId !== persoon.id)); }} style={{ background: "#c0392b22", border: "1px solid #c0392b44", color: "#e74c3c", padding: "3px 9px", borderRadius: 6, cursor: "pointer" }}>✕</button>
-              </div>
+            <Inklapbaar key={persoon.id} kleur={KLEUREN[pi % KLEUREN.length]}
+              titel={<>{pi === 0 ? "👤 " : "👥 "}{persoon.naam}{pi === 0 && <span style={{ fontSize: 11, color: "#555", marginLeft: 8, fontWeight: 400 }}>· oudste</span>}</>}
+              samenvatting={`geb. ${MAANDEN[(persoon.geboortemaand ?? 1) - 1]} ${persoon.geboortejaar} · stopt ${datumBijLeeftijd(persoon, persoon.pensioenLeeftijd)} · ${isSamenwonend(persoon) ? "samenwonend" : "alleenstaand"}`}>
               <Grid>
                 <Field label="Naam" value={persoon.naam} onChange={v => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, naam: v } : p))} />
                 <Field label="Geboortejaar" value={persoon.geboortejaar} onChange={v => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, geboortejaar: +v } : p))} type="number" />
@@ -661,11 +660,11 @@ export default function PensioenApp() {
                   </div>
                 );
               })()}
-            </div>
+              <VerwijderKnop wat={`${persoon.naam} en alle pensioenen van deze persoon`} onVerwijder={() => { setPersonen(personen.filter(p => p.id !== persoon.id)); setPensioenen(pensioenen.filter(p => p.eigenaarId !== persoon.id)); }} />
+            </Inklapbaar>
           ))}
           {tijdlijnData.length > 0 && (
-            <div style={{ padding: 20, background: "#1a2d3d", borderRadius: 12, border: "1px solid #2a4a5e" }}>
-              <h3 style={{ margin: "0 0 14px", color: "#c9a84c", fontSize: 14 }}>📊 Inkomensmomenten</h3>
+            <Inklapbaar titel="📊 Inkomensmomenten" samenvatting={`${tijdlijnData.length} momenten · vanaf ${tijdlijnData[0].datumLabel} € ${tijdlijnData[0].data.totNettoMnd.toLocaleString("nl-NL")} netto/mnd`}>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
                 {tijdlijnData.map((m, i) => (
                   <div key={i} style={{ background: "#111d26", border: `1px solid ${KLEUREN[i % KLEUREN.length]}44`, borderRadius: 10, padding: "12px 16px", minWidth: 210 }}>
@@ -687,7 +686,7 @@ export default function PensioenApp() {
                   </div>
                 ))}
               </div>
-            </div>
+            </Inklapbaar>
           )}
         </Section>}
 
@@ -702,21 +701,22 @@ export default function PensioenApp() {
               : { id: `koopsom_${Date.now()}`, naam: "Koopsom", type, eigenaarId: persoon.id, koopsom: 0, uitkeringMnd: 0, startLeeftijd: persoon.aowStartLeeftijd ?? 67, looptijd: 0, rente: 2 }]);
             const knop = { background: `${kleur}22`, border: `1px solid ${kleur}44`, color: kleur, padding: "7px 14px", borderRadius: 8, cursor: "pointer", fontSize: 12 };
             return (
-              <div key={persoon.id} style={{ marginBottom: 28 }}>
-                <h3 style={{ color: kleur, fontSize: 14, marginBottom: 12 }}>{pi === 0 ? "👤" : "👥"} {persoon.naam} · geb. {MAANDEN[(persoon.geboortemaand ?? 1) - 1]} {persoon.geboortejaar}</h3>
+              <Inklapbaar key={persoon.id} kleur={kleur}
+                titel={<>{pi === 0 ? "👤" : "👥"} {persoon.naam} <span style={{ fontSize: 11, color: "#7a9bb0", fontWeight: 400 }}>· geb. {MAANDEN[(persoon.geboortemaand ?? 1) - 1]} {persoon.geboortejaar}</span></>}
+                samenvatting={`${eigenPens.length} pensioen${eigenPens.length === 1 ? "" : "en"} · ${eigenProd.length} bankspaar/koopsom`}>
                 {eigenPens.length === 0 ? <div style={{ padding: 16, color: "#4a6a7e", fontSize: 13, textAlign: "center" }}>Geen pensioenen</div>
                   : eigenPens.map(p => <PensioenRij key={p.id} p={p} alle={pensioenen} setPensioenen={setPensioenen} kleur={kleur} />)}
                 {/* fix-5: banksparen & koopsommen */}
                 <div style={{ color: "#7a9bb0", fontSize: 12, fontWeight: 600, margin: "18px 0 10px" }}>🏦 Banksparen, beleggingsrechten & koopsommen</div>
                 {eigenProd.map(p => <ProductRij key={p.id} p={p} persoon={persoon} alle={pensioenen} setPensioenen={setPensioenen} kleur={kleur} />)}
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
+                  <button onClick={() => setPensioenen([...pensioenen, { id: `handmatig_${Date.now()}`, naam: "Nieuw pensioen", type: "pensioen", eigenaarId: persoon.id, bruto_jaar: 0, startLeeftijd: persoon.aowStartLeeftijd ?? 67.25, totLeeftijd: null }])} style={knop}>+ Pensioen</button>
                   <button onClick={() => nieuw("bankspaar")} style={knop}>+ Banksparen / beleggen</button>
                   <button onClick={() => nieuw("koopsom")} style={knop}>+ Koopsom</button>
                 </div>
-              </div>
+              </Inklapbaar>
             );
           })}
-          <button onClick={() => { const id = personenGesorteerd[0]?.id ?? "onbekend"; setPensioenen([...pensioenen, { id: `handmatig_${Date.now()}`, naam: "Nieuw pensioen", type: "pensioen", eigenaarId: id, bruto_jaar: 0, startLeeftijd: 67.25, totLeeftijd: null }]); }} style={{ background: "#c9a84c22", border: "1px solid #c9a84c44", color: "#c9a84c", padding: "9px 18px", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>+ Handmatig toevoegen</button>
         </Section>}
 
         {/* VERMOGEN */}
@@ -726,28 +726,32 @@ export default function PensioenApp() {
               💡 Deze bedragen zijn <strong>netto</strong> — er wordt geen belasting over berekend. Ze worden direct opgeteld bij het netto inkomen.
             </p>
           </div>
-          <h3 style={{ color: "#c9a84c", fontSize: 14, marginBottom: 12 }}>💰 Spaargeld inzetten als inkomen</h3>
+          <Inklapbaar titel="💰 Spaargeld inzetten als inkomen" samenvatting={vermogen.spaargeldPerJaar > 0 ? `€ ${vermogen.spaargeldPerJaar.toLocaleString("nl-NL")}/jr vanaf ${vermogen.spaargeldGebruikVanaf} jaar` : "niet ingezet"}>
           <Grid>
             <Field label="Totaal spaargeld (€)" value={vermogen.spaargeld} onChange={v=>setVermogen({...vermogen,spaargeld:+v})} type="number" />
             <Field label="Gebruik vanaf leeftijd oudste" value={vermogen.spaargeldGebruikVanaf} onChange={v=>setVermogen({...vermogen,spaargeldGebruikVanaf:+v})} type="number" />
             <Field label="Per jaar opnemen — netto (€)" value={vermogen.spaargeldPerJaar} onChange={v=>setVermogen({...vermogen,spaargeldPerJaar:+v})} type="number" />
           </Grid>
-          <h3 style={{ color: "#c9a84c", fontSize: 14, marginBottom: 12, marginTop: 24 }}>🏠 Woning inzetten als inkomen</h3>
+          </Inklapbaar>
+          <Inklapbaar titel="🏠 Woning inzetten als inkomen" samenvatting={vermogen.woningPerJaar > 0 ? `€ ${vermogen.woningPerJaar.toLocaleString("nl-NL")}/jr vanaf ${vermogen.woningGebruikVanaf} jaar` : "niet ingezet"}>
           <p style={{ color: "#7a9bb0", fontSize: 12, marginBottom: 12 }}>Bijv. verzilverhypotheek of verkoop + terughuur. Vul het netto bedrag in dat vrijkomt.</p>
           <Grid>
             <Field label="Woningwaarde (€)" value={vermogen.woningWaarde} onChange={v=>setVermogen({...vermogen,woningWaarde:+v})} type="number" />
             <Field label="Gebruik vanaf leeftijd oudste" value={vermogen.woningGebruikVanaf} onChange={v=>setVermogen({...vermogen,woningGebruikVanaf:+v})} type="number" />
             <Field label="Per jaar vrijmaken — netto (€)" value={vermogen.woningPerJaar} onChange={v=>setVermogen({...vermogen,woningPerJaar:+v})} type="number" />
           </Grid>
+          </Inklapbaar>
         </Section>}
 
         {/* SIMULATIE */}
         {tab === "simulatie" && <Section title="Pensioen aankoop simulatie">
+          <Inklapbaar titel="🎮 Extra aankoop" samenvatting={simulatie.aankoopJaar > 0 ? `€ ${simulatie.aankoopUitkering}/mnd, ${simulatie.aankoopJaar} jaar na pensionering` : "uit"}>
           <Grid>
             <Field label="Extra aankoop X jaar na 1e pensionering" value={simulatie.aankoopJaar} onChange={v=>setSimulatie({...simulatie,aankoopJaar:+v})} type="number" />
             <Field label="Aankoopbedrag (€)" value={simulatie.aankoopBedrag} onChange={v=>setSimulatie({...simulatie,aankoopBedrag:+v})} type="number" />
             <Field label="Extra uitkering per maand (€)" value={simulatie.aankoopUitkering} onChange={v=>setSimulatie({...simulatie,aankoopUitkering:+v})} type="number" />
           </Grid>
+          </Inklapbaar>
         </Section>}
 
         {/* PROGNOSE */}
@@ -794,7 +798,7 @@ export default function PensioenApp() {
                   ))}
                 </div>
               )}
-              <div style={{ background: "#1a2d3d", borderRadius: 12, padding: 18, marginBottom: 20 }}>
+              <Inklapbaar titel="📈 Grafiek" samenvatting="bruto, netto en AOW per jaar">
                 <ResponsiveContainer width="100%" height={260}>
                   <LineChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#2a4a5e" />
@@ -808,7 +812,8 @@ export default function PensioenApp() {
                     <Line type="monotone" dataKey="aowBruto"   name="AOW"   stroke="#5b9bd5" strokeWidth={1} dot={false} strokeDasharray="4 2" />
                   </LineChart>
                 </ResponsiveContainer>
-              </div>
+              </Inklapbaar>
+              <Inklapbaar titel="📋 Tabel per jaar" samenvatting={`${chartData.length} jaar`}>
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
@@ -840,6 +845,7 @@ export default function PensioenApp() {
                   </tbody>
                 </table>
               </div>
+              </Inklapbaar>
             </>
           )}
         </Section>}
@@ -980,18 +986,15 @@ function RegelItem({ label, sublabel, bedrag, kleur, tag }) {
 function PensioenRij({ p, alle, setPensioenen, kleur }) {
   const update = (veld, waarde) => setPensioenen(alle.map(x => x.id === p.id ? { ...x, [veld]: waarde } : x));
   return (
-    <div style={{ background: "#111d26", border: `1px solid ${kleur}33`, borderRadius: 10, padding: 14, marginBottom: 10 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 2 }}>
-            <span>{p.type === "bankspaar" ? "🏦" : p.type === "lijfrente" ? "📋" : "🏛️"}</span>
-            <input value={p.naam} onChange={e => update("naam", e.target.value)} style={{ ...inp, maxWidth: 280 }} />
-          </div>
-          <div style={{ fontSize: 11, color: "#4a6a7e", marginLeft: 24 }}>
-            {p.herkenning && `#${p.herkenning} · `}start lft {p.startLeeftijd}{p.totLeeftijd ? ` · stopt lft ${p.totLeeftijd}` : " · levenslang"}{p.standPer ? ` · ${p.standPer}` : ""}
-          </div>
+    <Inklapbaar sub kleur={kleur} standaardOpen={!(p.bruto_jaar > 0)}
+      titel={<>{p.type === "lijfrente" ? "📋" : "🏛️"} {p.naam}</>}
+      samenvatting={`€ ${Math.round((p.bruto_jaar ?? 0) / 12).toLocaleString("nl-NL")}/mnd bruto · vanaf ${p.startLeeftijd} jr${p.totLeeftijd ? ` tot ${p.totLeeftijd}` : ""}`}>
+      <div style={{ marginBottom: 8 }}>
+        <label style={lbl}>Naam</label>
+        <input value={p.naam} onChange={e => update("naam", e.target.value)} style={{ ...inp, maxWidth: 360 }} />
+        <div style={{ fontSize: 11, color: "#4a6a7e", marginTop: 4 }}>
+          {p.herkenning && `#${p.herkenning} · `}start lft {p.startLeeftijd}{p.totLeeftijd ? ` · stopt lft ${p.totLeeftijd}` : " · levenslang"}{p.standPer ? ` · ${p.standPer}` : ""}
         </div>
-        <button onClick={() => setPensioenen(alle.filter(x => x.id !== p.id))} style={{ background: "#c0392b22", border: "1px solid #c0392b44", color: "#e74c3c", padding: "3px 9px", borderRadius: 6, cursor: "pointer", marginLeft: 10 }}>✕</button>
       </div>
       <Grid>
         <div><label style={lbl}>Type</label>
@@ -1004,7 +1007,8 @@ function PensioenRij({ p, alle, setPensioenen, kleur }) {
         <Field label="Stopt leeftijd (leeg=levenslang)" value={p.totLeeftijd ?? ""} onChange={v => update("totLeeftijd", v === "" ? null : +v)} type="number" />
         <Field label="Bruto/jr (€)" value={p.bruto_jaar??0} onChange={v => update("bruto_jaar", +v)} type="number" />
       </Grid>
-    </div>
+      <VerwijderKnop wat={p.naam} onVerwijder={() => setPensioenen(alle.filter(x => x.id !== p.id))} />
+    </Inklapbaar>
   );
 }
 
@@ -1016,13 +1020,12 @@ function ProductRij({ p, persoon, alle, setPensioenen, kleur }) {
   const isBank = p.type === "bankspaar";
   const eind = pu.totLeeftijd != null ? `tot ${datumBijLeeftijd(persoon, pu.totLeeftijd)}` : "levenslang";
   return (
-    <div style={{ background: "#111d26", border: `1px solid ${kleur}33`, borderRadius: 10, padding: 14, marginBottom: 10 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10 }}>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flex: 1, minWidth: 0 }}>
-          <span>{isBank ? "🏦" : "💶"}</span>
-          <input value={p.naam} onChange={e => update("naam", e.target.value)} style={{ ...inp, maxWidth: 280 }} />
-        </div>
-        <button onClick={() => setPensioenen(alle.filter(x => x.id !== p.id))} style={{ background: "#c0392b22", border: "1px solid #c0392b44", color: "#e74c3c", padding: "3px 9px", borderRadius: 6, cursor: "pointer" }}>✕</button>
+    <Inklapbaar sub kleur={kleur} standaardOpen={!(pu.bedragJr > 0)}
+      titel={<>{isBank ? "🏦" : "💶"} {p.naam}</>}
+      samenvatting={`€ ${Math.round(pu.bedragJr / 12).toLocaleString("nl-NL")}/mnd bruto vanaf ${datumBijLeeftijd(persoon, p.startLeeftijd)}`}>
+      <div style={{ marginBottom: 8 }}>
+        <label style={lbl}>Naam</label>
+        <input value={p.naam} onChange={e => update("naam", e.target.value)} style={{ ...inp, maxWidth: 360 }} />
       </div>
       <Grid>
         <div><label style={lbl}>Soort</label>
@@ -1051,6 +1054,48 @@ function ProductRij({ p, persoon, alle, setPensioenen, kleur }) {
         {pu.geschat && <span style={{ color: "#4a6a7e" }}> · schatting{!isBank && pu.totLeeftijd == null ? " (levenslang gerekend tot 90 jaar)" : ""}</span>}
         <div style={{ color: "#4a6a7e", fontSize: 11, marginTop: 2 }}>Telt als bruto inkomen (box 1): belasting en Zvw worden ingehouden.</div>
       </div>
+      <VerwijderKnop wat={p.naam} onVerwijder={() => setPensioenen(alle.filter(x => x.id !== p.id))} />
+    </Inklapbaar>
+  );
+}
+
+// ─── fix-6: inklapbaar blok ───────────────────────────────────────────────────
+// sub = kleiner blok binnen een ander blok (pensioenregeling, product)
+function Inklapbaar({ titel, samenvatting, kleur = "#c9a84c", standaardOpen = true, sub = false, children }) {
+  const [open, setOpen] = useState(standaardOpen);
+  return (
+    <div style={{ background: sub ? "#111d26" : "#1a2d3d", border: `1px solid ${kleur}${sub ? "33" : "44"}`, borderRadius: sub ? 10 : 12, padding: sub ? "0 14px" : "0 18px", marginBottom: sub ? 10 : 16 }}>
+      <button onClick={() => setOpen(!open)} aria-expanded={open}
+        style={{ width: "100%", display: "grid", gridTemplateColumns: "14px 1fr", alignItems: "baseline", columnGap: 8, background: "transparent", border: "none", padding: sub ? "11px 0" : "14px 0", cursor: "pointer", textAlign: "left", color: kleur, fontFamily: "inherit" }}>
+        <span style={{ fontSize: 11, color: "#7a9bb0" }}>{open ? "▼" : "▶"}</span>
+        <span style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", columnGap: 12, rowGap: 2, minWidth: 0 }}>
+          <span style={{ fontSize: sub ? 13 : 15, fontWeight: 700, minWidth: 0 }}>{titel}</span>
+          {!open && samenvatting && <span style={{ fontSize: 12, color: "#7a9bb0", marginLeft: "auto" }}>{samenvatting}</span>}
+        </span>
+      </button>
+      {open && <div style={{ paddingBottom: sub ? 12 : 18 }}>{children}</div>}
+    </div>
+  );
+}
+
+// ─── fix-6: veilig verwijderen (eerst bevestigen) ─────────────────────────────
+function VerwijderKnop({ wat, onVerwijder }) {
+  const [bevestig, setBevestig] = useState(false);
+  useEffect(() => {
+    if (!bevestig) return;
+    const t = setTimeout(() => setBevestig(false), 6000);   // vanzelf annuleren
+    return () => clearTimeout(t);
+  }, [bevestig]);
+  const basis = { borderRadius: 6, cursor: "pointer", fontSize: 12, padding: "5px 12px", fontFamily: "inherit" };
+  return (
+    <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 10, paddingTop: 10, borderTop: "1px solid #2a4a5e" }}>
+      {!bevestig
+        ? <button onClick={() => setBevestig(true)} style={{ ...basis, background: "transparent", border: "1px solid #2a4a5e", color: "#7a9bb0" }}>🗑 Verwijderen</button>
+        : <>
+            <span style={{ fontSize: 12, color: "#e07b54" }}>{wat} verwijderen?</span>
+            <button onClick={() => setBevestig(false)} style={{ ...basis, background: "transparent", border: "1px solid #3a5a6e", color: "#b8c8d4" }}>Annuleren</button>
+            <button onClick={() => { setBevestig(false); onVerwijder(); }} style={{ ...basis, background: "#c0392b", border: "1px solid #c0392b", color: "#fff", fontWeight: 600 }}>Ja, verwijderen</button>
+          </>}
     </div>
   );
 }
