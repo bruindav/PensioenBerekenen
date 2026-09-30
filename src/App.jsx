@@ -1,4 +1,6 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-4: Help-, Privacy- en Disclaimerpagina (src/InfoPaginas.jsx), bereikbaar via
+//        de ❓ Help-knop, de voettekst en #help / #privacy / #disclaimer in de URL
 // fix-3: leefsituatie (samenwonend/alleenstaand) per persoon uit het XML-overzicht
 //        (LevensSituatie) en instelbaar; bepaalt AOW-bedrag en alleenstaande-ouderenkorting
 // fix-2: - berekening per maand i.p.v. per jaar (geboortemaand uit het XML-overzicht);
@@ -13,9 +15,10 @@
 // v11: AOW automatisch berekend op basis van pensioenleeftijd
 
 import { useState, useMemo, useEffect } from "react";
+import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-3";
+const FIX_NR = "fix-4";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -258,6 +261,22 @@ export default function PensioenApp() {
   const [importStatus, setImportStatus] = useState(null);
   const [prognoseView, setPrognoseView] = useState("tijdlijn");
 
+  // Info-pagina's (fix-4): gekoppeld aan #help / #privacy / #disclaimer
+  const INFO = ["help", "privacy", "disclaimer"];
+  const leesHash = () => { const h = window.location.hash.replace("#", ""); return INFO.includes(h) ? h : null; };
+  const [infoPagina, setInfoPagina] = useState(leesHash);
+  useEffect(() => {
+    const onHash = () => setInfoPagina(leesHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  function naarInfo(pagina) {
+    if (pagina) window.location.hash = pagina;
+    else history.replaceState(null, "", window.location.pathname + window.location.search);
+    setInfoPagina(pagina);
+    window.scrollTo(0, 0);
+  }
+
   const [personen,   setPersonenRaw]   = useState(DEFAULT.personen);
   const [pensioenen, setPensioenenRaw] = useState(DEFAULT.pensioenen);
   const [vermogen,   setVermogenRaw]   = useState(DEFAULT.vermogen);
@@ -490,6 +509,7 @@ export default function PensioenApp() {
           {opgeslagen && <span style={{ fontSize: 11, color: "#4caf8a" }}>✓ {opgeslagen.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}</span>}
           <label style={{ ...btn("#5b9bd5"), cursor: "pointer" }}>📥 Pensioen importeren<input type="file" accept=".json,.xml" onChange={importeerBestand} style={{ display: "none" }} /></label>
           <button onClick={exporteer} style={btn("#c9a84c")}>⬇ Backup</button>
+          <button onClick={() => naarInfo("help")} style={btn("#4caf8a")}>❓ Help</button>
           <label style={{ ...btn("#7a9bb0"), cursor: "pointer" }}>⬆ Herstel<input type="file" accept=".json" onChange={importeerBackup} style={{ display: "none" }} /></label>
         </div>
       </div>
@@ -503,12 +523,23 @@ export default function PensioenApp() {
 
       <div style={{ display: "flex", background: "#111d26", borderBottom: "1px solid #2a4a5e", overflowX: "auto" }}>
         {[["profiel","👤 Mijn situatie"],["pensioenen","📄 Pensioenen"],["vermogen","🏠 Vermogen"],["simulatie","🎮 Simulatie"],["prognose","📈 Prognose"]].map(([key, label]) => (
-          <button key={key} onClick={() => setTab(key)} style={{ padding: "12px 20px", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", background: tab === key ? "#1a2d3d" : "transparent", color: tab === key ? "#c9a84c" : "#7a9bb0", borderBottom: tab === key ? "2px solid #c9a84c" : "2px solid transparent" }}>{label}</button>
+          <button key={key} onClick={() => { setTab(key); if (infoPagina) naarInfo(null); }} style={{ padding: "12px 20px", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", background: !infoPagina && tab === key ? "#1a2d3d" : "transparent", color: !infoPagina && tab === key ? "#c9a84c" : "#7a9bb0", borderBottom: !infoPagina && tab === key ? "2px solid #c9a84c" : "2px solid transparent" }}>{label}</button>
         ))}
       </div>
 
       <div style={{ maxWidth: 980, margin: "0 auto", padding: "28px 20px" }}>
 
+        {/* INFO-PAGINA'S (fix-4) */}
+        {infoPagina && (
+          <div>
+            <button onClick={() => naarInfo(null)} style={{ ...btn("#7a9bb0"), marginBottom: 24 }}>← Terug naar de app</button>
+            {infoPagina === "help"       && <HelpPagina naar={naarInfo} />}
+            {infoPagina === "privacy"    && <PrivacyPagina />}
+            {infoPagina === "disclaimer" && <DisclaimerPagina />}
+          </div>
+        )}
+
+        {!infoPagina && <>
         {/* PROFIEL */}
         {tab === "profiel" && <Section title="Mijn situatie">
           {personen.length === 0 && (
@@ -753,7 +784,16 @@ export default function PensioenApp() {
             </>
           )}
         </Section>}
+        </>}
       </div>
+
+      {/* Voettekst (fix-4) */}
+      <footer style={{ borderTop: "1px solid #2a4a5e", padding: "18px 20px 28px", textAlign: "center", fontSize: 12, color: "#4a6a7e" }}>
+        {[["help", "Help"], ["privacy", "Privacy"], ["disclaimer", "Disclaimer"]].map(([k, l], i) => (
+          <span key={k}>{i > 0 && " · "}<a href={`#${k}`} onClick={e => { e.preventDefault(); naarInfo(k); }} style={{ color: "#7a9bb0" }}>{l}</a></span>
+        ))}
+        <div style={{ marginTop: 6 }}>Indicatieve berekening — aan de uitkomsten kunnen geen rechten worden ontleend.</div>
+      </footer>
     </div>
   );
 }
