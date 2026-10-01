@@ -1,4 +1,6 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-8: gegevens van de 2e persoon verdwenen na herladen — opslaan nu centraal
+//        via useEffect met de actuele state (zie bij "opslaan")
 // fix-7: scenario "eerder (of later) stoppen met werken" per persoon:
 //        - schuifregelaar voor de stopleeftijd (per maand)
 //        - pensioenopbouw loopt door tot de stopleeftijd (Opgebouwd → TeBereiken uit het XML)
@@ -34,7 +36,7 @@ import { useState, useMemo, useEffect } from "react";
 import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-7";
+const FIX_NR = "fix-8";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -393,14 +395,20 @@ export default function PensioenApp() {
     })();
   }, []);
 
-  async function slaOp(pe, ps, v, s) {
-    try { await dbSet("state", { personen: pe, pensioenen: ps, vermogen: v, simulatie: s }); setOpgeslagen(new Date()); }
-    catch (e) { console.warn(e); }
-  }
-  function setPersonen(v)   { setPersonenRaw(v);   slaOp(v, pensioenen, vermogen, simulatie); }
-  function setPensioenen(v) { setPensioenenRaw(v); slaOp(personen, v, vermogen, simulatie); }
-  function setVermogen(v)   { setVermogenRaw(v);   slaOp(personen, pensioenen, v, simulatie); }
-  function setSimulatie(v)  { setSimulatieRaw(v);  slaOp(personen, pensioenen, vermogen, v); }
+  // fix-8: opslaan gebeurt nu op één plek, ná elke wijziging, met de actuele state.
+  // Voorheen sloeg elke setter direct op met de (verouderde) waarden van de andere
+  // onderdelen. Bij import (setPersonen + setPensioenen) overschreef de tweede opslag
+  // daardoor de nieuwe persoon weer, en was die na herladen verdwenen.
+  const setPersonen   = setPersonenRaw;
+  const setPensioenen = setPensioenenRaw;
+  const setVermogen   = setVermogenRaw;
+  const setSimulatie  = setSimulatieRaw;
+  useEffect(() => {
+    if (!geladen) return;                       // niet de opgeslagen data overschrijven tijdens het laden
+    dbSet("state", { personen, pensioenen, vermogen, simulatie })
+      .then(() => setOpgeslagen(new Date()))
+      .catch(e => console.warn(e));
+  }, [geladen, personen, pensioenen, vermogen, simulatie]);
 
   function importeerBestand(e) {
     const file = e.target.files[0]; if (!file) return; e.target.value = "";
@@ -434,7 +442,8 @@ export default function PensioenApp() {
             nieuwePersonen = nieuwePersonen.map(p => p.id === eigenaarId ? { ...p, aowSamen: result.aow.samen || p.aowSamen, aowAlleen: result.aow.alleen || p.aowAlleen, aowStartLeeftijd: result.aow.startLeeftijd ?? p.aowStartLeeftijd } : p);
           }
         }
-        const bestaandePens = pensioenen.filter(p => p.eigenaarId !== eigenaarId);
+        // fix-8: ook pensioenen zonder (bestaande) eigenaar opruimen — achtergebleven door de oude opslagfout
+        const bestaandePens = pensioenen.filter(p => p.eigenaarId !== eigenaarId && nieuwePersonen.some(x => x.id === p.eigenaarId));
         const nieuwePens = result.pensioenen.map((p, i) => ({ ...p, id: `${eigenaarId}_${p.herkenning ?? i}_${p.startLeeftijd}`, eigenaarId }));
         setPersonen(nieuwePersonen);
         setPensioenen([...bestaandePens, ...nieuwePens]);
