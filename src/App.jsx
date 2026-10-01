@@ -1,4 +1,6 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-10: vergelijking uitgelegd in gewone woorden: per scenario een korte uitleg
+//         ("Wat betekent dit?") en een uitleg per regel van de tabel
 // fix-9: tabblad Simulatie omgebouwd tot "scenario's":
 //        - de stop-scenario's per persoon staan nu hier (Mijn situatie toont een samenvatting)
 //        - varianten bewaren en naast elkaar vergelijken met "doorwerken tot AOW"
@@ -42,7 +44,7 @@ import { useState, useMemo, useEffect } from "react";
 import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-9";
+const FIX_NR = "fix-10";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -607,7 +609,19 @@ export default function PensioenApp() {
     const pensioenJr = pers.reduce((s, p) => s + pensioenen
       .filter(x => x.eigenaarId === p.id && !isProduct(x) && x.totLeeftijd == null)
       .reduce((t, x) => t + pensioenDetail(x, p).laag, 0), 0);
-    return { stopAbs, beginAbs, eindAbs, nettoBegin: netto(beginAbs), laagste, laagsteAbs, eind, aanvulling: Math.round(aanvulling), pensioenJr };
+    // fix-10: per persoon voor de uitleg in gewone woorden
+    const info = pers.map((p, i) => {
+      const aowAbs = gebAbs(p) + maandenVan(p.aowStartLeeftijd ?? 67.25);
+      const eigen = pensioenen.filter(x => x.eigenaarId === p.id);
+      const ingangen = eigen.map(x => gebAbs(p) + maandenVan(isProduct(x) ? x.startLeeftijd : ingangLeeftijd(x, p)));
+      const pensIngang = eigen.filter(x => !isProduct(x) && x.totLeeftijd == null).map(x => ingangLeeftijd(x, p));
+      return { id: p.id, naam: p.naam.split(" ")[0], stopAbs: stopAbs[i], stopLft: p.pensioenLeeftijd ?? p.aowStartLeeftijd ?? 67.25,
+        aowAbs, eersteInkomen: Math.min(aowAbs, ...ingangen), modus: p.ingangModus ?? "standaard",
+        ingangLft: pensIngang.length ? Math.min(...pensIngang) : null, ingangAbs: pensIngang.length ? gebAbs(p) + maandenVan(Math.min(...pensIngang)) : null,
+        laatsteLft: pensIngang.length ? Math.max(...pensIngang) : null, laatsteAbs: pensIngang.length ? gebAbs(p) + maandenVan(Math.max(...pensIngang)) : null,
+        hoogLaag: !!p.hoogLaag };
+    });
+    return { stopAbs, beginAbs, eindAbs, nettoBegin: netto(beginAbs), laagste, laagsteAbs, eind, aanvulling: Math.round(aanvulling), pensioenJr, info };
   }
   const SCEN_VELDEN = ["pensioenLeeftijd", "ingangModus", "ingangLeeftijd", "hoogLaag"];
   const metInstellingen = (inst) => personen.map(p => ({ ...p, ...(inst?.[p.id] ?? {}) }));
@@ -1141,8 +1155,20 @@ function ScenarioVergelijking({ kolommen, personenGesorteerd, onToepassen, onVer
     { label: "Aanvulling nodig", sub: "om tot de eindsituatie al op dat niveau te leven", cel: (k) => <span style={{ color: k.kc.aanvulling > 0 ? "#e07b54" : undefined }}>{euro(k.kc.aanvulling)}</span> },
     { label: "Levenslang pensioen", sub: "bruto per jaar, vanaf AOW", cel: (k) => <>{euro(k.kc.pensioenJr)}{k.id !== "door" && delta(k.kc.pensioenJr, ref.pensioenJr)}</> },
   ];
+  const volgorde = (k) => personenGesorteerd.map(p => k.kc.info.find(x => x.id === p.id)).filter(Boolean);
   return (
     <div>
+      {/* fix-10: eerst in gewone woorden, daarna de cijfers op een rij */}
+      <div style={{ fontSize: 13, color: "#b8c8d4", lineHeight: 1.6, marginBottom: 12 }}>
+        Hieronder staat per plan in gewone woorden wat het betekent. Elk plan wordt vergeleken met
+        <strong> doorwerken tot de AOW-leeftijd</strong> (allebei werken tot de AOW, pensioenen op de gewone leeftijd).
+      </div>
+      {kolommen.filter(k => k.id !== "door").map((k, i) => (
+        <Inklapbaar key={k.id} sub kleur={k.kleur} standaardOpen={i === 0} titel={<>📖 {k.naam}</>} samenvatting={`€ ${Math.round(k.kc.eind).toLocaleString("nl-NL")} netto/mnd als alles is ingegaan`}>
+          <UitlegScenario k={k} ref_={kolommen[0]} personen={volgorde(k)} />
+        </Inklapbaar>
+      ))}
+      <div style={{ color: "#7a9bb0", fontSize: 12, fontWeight: 600, margin: "18px 0 8px" }}>📊 De cijfers op een rij</div>
     <div style={{ overflowX: "auto" }}>
       <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: "100%" }}>
         <thead><tr>
@@ -1171,6 +1197,85 @@ function ScenarioVergelijking({ kolommen, personenGesorteerd, onToepassen, onVer
         Bedragen: pensioen + AOW na belasting, voor jullie samen, zonder salaris, spaargeld en woning. Verschillen (rood/groen) zijn t.o.v. doorwerken tot de AOW-leeftijd.
         Stopt een van jullie eerder dan de ander, dan valt diens salaris in de tussentijd weg; dat rekent de app niet mee.
       </div>
+      <Inklapbaar sub kleur="#7a9bb0" standaardOpen={false} titel="❓ Hoe lees je de tabel?">
+        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#b8c8d4", lineHeight: 1.7 }}>
+          <li><strong>… stopt</strong> — wanneer iemand stopt met werken, en wanneer het pensioen ingaat.</li>
+          <li><strong>Allebei gestopt</strong> — de maand waarin de laatste van jullie stopt. Vanaf dan is er geen salaris meer.</li>
+          <li><strong>Netto/mnd direct daarna</strong> — wat jullie samen per maand overhouden in die eerste maand zonder salaris.</li>
+          <li><strong>Laagste netto/mnd</strong> — de krapste maand na het stoppen, en wanneer die is.</li>
+          <li><strong>Netto/mnd eindsituatie</strong> — wat jullie per maand hebben als alle AOW en pensioenen zijn ingegaan. Dit bedrag blijft daarna (ongeveer) zo.</li>
+          <li><strong>Aanvulling nodig</strong> — hoeveel spaargeld je in totaal nodig hebt om in de tussentijd al van het eindbedrag te leven. Bij doorwerken is dat € 0, want dan gaat alles meteen in.</li>
+          <li><strong>Levenslang pensioen</strong> — jullie pensioenen samen per jaar, bruto, zonder AOW. Eerder stoppen of eerder laten ingaan maakt dit bedrag voor de rest van je leven lager.</li>
+          <li><strong>Rood/groen getal</strong> — hoeveel minder (rood) of meer (groen) dan bij doorwerken tot de AOW-leeftijd.</li>
+        </ul>
+      </Inklapbaar>
+    </div>
+  );
+}
+
+// ─── fix-10: één scenario uitgelegd in gewone woorden ────────────────────────
+function UitlegScenario({ k, ref_, personen }) {
+  const kc = k.kc, rk = ref_.kc;
+  const euro = (v) => `€ ${Math.round(v).toLocaleString("nl-NL")}`;
+  const ongeveer = (v) => euro(v >= 10000 ? Math.round(v / 1000) * 1000 : Math.round(v / 100) * 100);
+  const duur = (m) => m >= 12 ? `${Math.floor(m / 12)} jaar${m % 12 ? ` en ${m % 12} maanden` : ""}` : `${m} maand${m === 1 ? "" : "en"}`;
+  const zin = { marginBottom: 8 };
+  const stop = (p) => `${p.naam} stopt in ${absNaarLabel(p.stopAbs)} (${lftLabel(maandenVan(p.stopLft))})`;
+  const ingang = (p) => p.ingangAbs == null ? null
+    : p.modus === "stoppen" ? <>Het pensioen van {p.naam} gaat <strong>direct bij het stoppen</strong> in.</>
+    : maandenVan(p.laatsteLft) > maandenVan(p.ingangLft)
+      ? <>Het eerste pensioen van {p.naam} gaat in op {lftLabel(maandenVan(p.ingangLft))} ({absNaarLabel(p.ingangAbs)}), het laatste op {lftLabel(maandenVan(p.laatsteLft))} ({absNaarLabel(p.laatsteAbs)}).</>
+      : <>Het pensioen van {p.naam} gaat in op {lftLabel(maandenVan(p.ingangLft))} ({absNaarLabel(p.ingangAbs)}).</>;
+  const zelfde = Math.round(kc.eind) === Math.round(rk.eind) && kc.beginAbs === rk.beginAbs && Math.round(kc.pensioenJr) === Math.round(rk.pensioenJr);
+  if (zelfde) return <div style={{ fontSize: 13, color: "#b8c8d4" }}>Dit plan is hetzelfde als doorwerken tot de AOW-leeftijd. Vanaf {absNaarLabel(kc.eindAbs)} is alles ingegaan en hebben jullie samen <strong>{euro(kc.eind)} netto per maand</strong>.</div>;
+
+  const verschil = Math.round(kc.eind - rk.eind);
+  const pensVerschil = Math.round(kc.pensioenJr - rk.pensioenJr);
+  const eerste = personen.reduce((a, b) => (b.stopAbs < a.stopAbs ? b : a));
+  const laatste = personen.reduce((a, b) => (b.stopAbs > a.stopAbs ? b : a));
+  const hoogLaag = personen.filter(p => p.hoogLaag);
+  return (
+    <div style={{ fontSize: 13, color: "#d4dde4", lineHeight: 1.6 }}>
+      <p style={zin}>
+        <strong>Wanneer:</strong> {personen.map(stop).join(", ")}.{" "}
+        {personen.map(p => <span key={p.id}>{ingang(p)} </span>)}
+      </p>
+      {personen.filter(p => p.eersteInkomen > p.stopAbs).map(p => (
+        <p key={p.id} style={{ ...zin, color: "#e0a07b" }}>
+          ⚠ {p.naam} heeft na het stoppen <strong>{duur(p.eersteInkomen - p.stopAbs)} géén eigen inkomen</strong>: nog geen pensioen en nog geen AOW (tot {absNaarLabel(p.eersteInkomen)}).
+        </p>
+      ))}
+      {eerste.stopAbs < laatste.stopAbs && (
+        <p style={{ ...zin, color: "#7a9bb0" }}>
+          Van {absNaarLabel(eerste.stopAbs)} tot {absNaarLabel(laatste.stopAbs)} werkt alleen {laatste.naam} nog. Dat salaris zit niet in de app, dus die periode telt hier niet mee.
+        </p>
+      )}
+      <p style={zin}>
+        <strong>Zodra jullie allebei gestopt zijn</strong> ({absNaarLabel(kc.beginAbs)}), hebben jullie samen <strong>{euro(kc.nettoBegin)} netto per maand</strong>.
+        {kc.laagste < kc.nettoBegin - 1 && <> Het krapst is het in {absNaarLabel(kc.laagsteAbs)}: {euro(kc.laagste)} per maand.</>}
+      </p>
+      <p style={zin}>
+        <strong>Vanaf {absNaarLabel(kc.eindAbs)} is alles ingegaan</strong> (AOW en alle pensioenen). Dan hebben jullie <strong>{euro(kc.eind)} netto per maand</strong>.{" "}
+        {verschil === 0 ? <>Dat is evenveel als bij doorwerken tot de AOW-leeftijd.</>
+          : <>Dat is <strong style={{ color: verschil < 0 ? "#e07b54" : "#4caf8a" }}>{euro(Math.abs(verschil))} {verschil < 0 ? "minder" : "meer"}</strong> dan bij doorwerken tot de AOW-leeftijd ({euro(rk.eind)}), en dat verschil blijft de rest van jullie leven.</>}
+      </p>
+      {kc.aanvulling > 0 && (
+        <p style={zin}>
+          <strong>Spaargeld:</strong> willen jullie tussen {absNaarLabel(kc.beginAbs)} en {absNaarLabel(kc.eindAbs)} al van {euro(kc.eind)} per maand leven?
+          Dan hebben jullie daarvoor in totaal <strong style={{ color: "#e07b54" }}>ongeveer {ongeveer(kc.aanvulling)}</strong> spaargeld nodig.
+        </p>
+      )}
+      {hoogLaag.length > 0 && (
+        <p style={zin}>
+          <strong>Hoog-laag</strong> ({hoogLaag.map(p => p.naam).join(" en ")}): tot de AOW-leeftijd een hoger pensioen, daarna 75% daarvan.
+          Daardoor is de tussenperiode minder krap, maar is het pensioen daarna lager.
+        </p>
+      )}
+      {pensVerschil !== 0 && (
+        <p style={{ ...zin, marginBottom: 0, color: "#7a9bb0" }}>
+          Het pensioen zelf (zonder AOW) is levenslang {euro(Math.abs(pensVerschil))} per jaar bruto {pensVerschil < 0 ? "lager" : "hoger"} dan bij doorwerken.
+        </p>
+      )}
     </div>
   );
 }

@@ -2,6 +2,7 @@
 // fix-4: nieuwe pagina's Help, Privacy en Disclaimer
 // fix-5: help uitgebreid met banksparen en koopsommen
 // fix-6: verwijderen via 🗑-knop met bevestiging; blokken inklapbaar
+// fix-10: vergelijking met uitleg in gewone woorden
 // fix-9: Simulatie = scenario's stoppen met werken bewaren en vergelijken
 // fix-7: uitleg scenario stoppen met werken; AOW-tekst gecorrigeerd (opbouw door wonen, niet werken)
 
@@ -100,6 +101,8 @@ export function HelpPagina({ naar }) {
         <li><strong>⚖️ Vergelijken</strong> — bewaar een instelling onder een naam en zet varianten naast elkaar, altijd met "doorwerken tot AOW" als vergelijking.
           Je ziet onder meer het netto inkomen per maand zodra jullie allebei gestopt zijn, de laagste maand, het netto inkomen als alles is ingegaan,
           en hoeveel spaargeld nodig is om tot dan al op dat niveau te leven. Met <em>Toepassen</em> zet je een bewaarde variant weer actief.</li>
+        <li><strong>📖 Uitleg per plan</strong> — bij elk plan staat in gewone woorden wat het betekent: wanneer jullie stoppen, hoe lang iemand zonder inkomen zit,
+          wat jullie per maand overhouden en hoeveel spaargeld nodig is. Onder de tabel staat bij "Hoe lees je de tabel?" wat elke regel betekent.</li>
         <li><strong>📈 Grafiek</strong> — netto per maand per scenario door de jaren heen.</li>
       </ul>
       <p>Salaris zit niet in de app. Stopt een van jullie eerder dan de ander, dan valt dat salaris in de tussentijd weg zonder dat de app dat meerekent.
