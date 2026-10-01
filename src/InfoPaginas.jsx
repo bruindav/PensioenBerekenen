@@ -2,6 +2,7 @@
 // fix-4: nieuwe pagina's Help, Privacy en Disclaimer
 // fix-5: help uitgebreid met banksparen en koopsommen
 // fix-6: verwijderen via 🗑-knop met bevestiging; blokken inklapbaar
+// fix-9: Simulatie = scenario's stoppen met werken bewaren en vergelijken
 // fix-7: uitleg scenario stoppen met werken; AOW-tekst gecorrigeerd (opbouw door wonen, niet werken)
 
 const BIJGEWERKT = "september 2026";
@@ -60,7 +61,7 @@ export function HelpPagina({ naar }) {
       <ul style={s.ul}>
         <li><strong>Geboortejaar en -maand</strong> — de app rekent per maand, dus de maand bepaalt wanneer een uitkering start.</li>
         <li><strong>Leefsituatie</strong> — gehuwd/samenwonend of alleenstaand. Dit bepaalt de hoogte van je AOW en of je de alleenstaande-ouderenkorting krijgt.</li>
-        <li><strong>🎮 Scenario: stoppen met werken</strong> — schuif de leeftijd waarop je stopt (per maand). Je pensioenopbouw loopt door tot die leeftijd. Kies of je pensioen op de standaardleeftijd ingaat, direct bij stoppen of op een eigen leeftijd (vanaf 60), en of je hoog-laag wilt (tot je AOW hoger, daarna 75%). Je ziet per regeling het verschil met doorwerken tot je AOW-leeftijd, hoe lang je zonder AOW of zonder enig inkomen zit, en of het partnerpensioen daalt. Ook op het tabblad Prognose staat een schuifregelaar per persoon.</li>
+        <li><strong>Stopt met werken</strong> — een samenvatting van wanneer je stopt en wanneer je pensioen ingaat. Aanpassen doe je op het tabblad Simulatie.</li>
         <li><strong>AOW</strong> — die bouw je op door in Nederland te wonen, niet door te werken. Eerder stoppen met werken verandert je AOW dus niet; je krijgt hem wel pas vanaf je AOW-leeftijd.</li>
         <li><strong>AOW vanaf leeftijd</strong> — wordt uit het overzicht gehaald (bijv. 67,25 = 67 jaar en 3 maanden).</li>
       </ul>
@@ -89,11 +90,20 @@ export function HelpPagina({ naar }) {
         in de berekening).
       </p>
 
-      <h2 style={s.h2}>6. Simulatie</h2>
-      <p>
-        Speel met een extra aankoop van pensioen: een bedrag dat je een aantal jaar na je eerste pensioendatum inlegt,
-        en de extra maanduitkering die dat oplevert.
-      </p>
+      <h2 style={s.h2}>6. Simulatie: wanneer stoppen we?</h2>
+      <p>Hier speel je met <strong>wanneer ieder van jullie stopt met werken</strong>. Alles wat je instelt werkt direct door in de Prognose.</p>
+      <ul style={s.ul}>
+        <li><strong>Stopt met werken op</strong> — schuif per maand. Je pensioenopbouw loopt door tot die leeftijd.</li>
+        <li><strong>Pensioen laten ingaan</strong> — op de standaardleeftijd, direct bij stoppen of op een eigen leeftijd (vanaf 60). Eerder ingaan geeft levenslang een lager pensioen, later een hoger.</li>
+        <li><strong>Hoog-laag</strong> — tot je AOW-leeftijd een hoger pensioen, daarna 75% daarvan.</li>
+        <li>Per persoon zie je het verschil met doorwerken tot de AOW-leeftijd, hoe lang je zonder AOW of zonder enig inkomen zit, en of het partnerpensioen daalt.</li>
+        <li><strong>⚖️ Vergelijken</strong> — bewaar een instelling onder een naam en zet varianten naast elkaar, altijd met "doorwerken tot AOW" als vergelijking.
+          Je ziet onder meer het netto inkomen per maand zodra jullie allebei gestopt zijn, de laagste maand, het netto inkomen als alles is ingegaan,
+          en hoeveel spaargeld nodig is om tot dan al op dat niveau te leven. Met <em>Toepassen</em> zet je een bewaarde variant weer actief.</li>
+        <li><strong>📈 Grafiek</strong> — netto per maand per scenario door de jaren heen.</li>
+      </ul>
+      <p>Salaris zit niet in de app. Stopt een van jullie eerder dan de ander, dan valt dat salaris in de tussentijd weg zonder dat de app dat meerekent.
+        Extra pensioen kopen? Voeg bij Pensioenen een koopsom toe; die telt mee in alle scenario's.</p>
 
       <h2 style={s.h2}>7. Prognose</h2>
       <ul style={s.ul}>

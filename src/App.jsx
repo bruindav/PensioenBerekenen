@@ -1,4 +1,10 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-9: tabblad Simulatie omgebouwd tot "scenario's":
+//        - de stop-scenario's per persoon staan nu hier (Mijn situatie toont een samenvatting)
+//        - varianten bewaren en naast elkaar vergelijken met "doorwerken tot AOW"
+//          (netto per maand na stoppen, laagste maand, eindsituatie, aanvulling uit spaargeld)
+//        - grafiek netto per maand per scenario
+//        - oude "extra aankoop" wordt automatisch een koopsom bij Pensioenen
 // fix-8: gegevens van de 2e persoon verdwenen na herladen — opslaan nu centraal
 //        via useEffect met de actuele state (zie bij "opslaan")
 // fix-7: scenario "eerder (of later) stoppen met werken" per persoon:
@@ -36,7 +42,7 @@ import { useState, useMemo, useEffect } from "react";
 import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-8";
+const FIX_NR = "fix-9";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -204,6 +210,7 @@ function ingangsFactor(ingang, rekenLft) {
   const x = Math.min(ingang, rekenLft);
   return pvUitkering(x, rekenLft) / pvUitkering(x, ingang);
 }
+const INGANG_TEKST = { standaard: "pensioen op standaardleeftijd", stoppen: "pensioen direct bij stoppen", eigen: "pensioen op eigen leeftijd" };   // fix-9
 const MIN_INGANG = 60;      // ABP: vanaf de maand waarin je 60 wordt
 const MAX_UITSTEL = 5;      // tot 5 jaar na de AOW-leeftijd
 const standAbs = (p) => { const [j, m] = (p.standPer ?? "").split("-").map(Number); return j > 0 ? j * 12 + ((m || 1) - 1) : NU_ABS; };
@@ -348,8 +355,19 @@ function parseerBestand(inhoud, naam) {
 const DEFAULT = {
   personen: [], pensioenen: [],
   vermogen: { spaargeld: 0, spaargeldGebruikVanaf: 67, spaargeldPerJaar: 0, woningWaarde: 0, woningGebruikVanaf: 75, woningPerJaar: 0 },
-  simulatie: { aankoopJaar: 0, aankoopBedrag: 10000, aankoopUitkering: 600 },
+  simulatie: { scenarios: [] },                                   // fix-9
 };
+// fix-9: oude simulatie (extra aankoop) omzetten naar een koopsom; simulatie = bewaarde scenario's
+function normaliseer(d) {
+  let pensioenen = d.pensioenen ?? [];
+  const oud = d.simulatie ?? {};
+  if (oud.aankoopJaar > 0 && d.personen?.length) {
+    const oudste = [...d.personen].sort((a, b) => gebAbs(a) - gebAbs(b))[0];
+    pensioenen = [...pensioenen, { id: `koopsom_migr_${Date.now()}`, naam: "Extra aankoop (uit oude simulatie)", type: "koopsom", eigenaarId: oudste.id,
+      koopsom: oud.aankoopBedrag ?? 0, uitkeringMnd: oud.aankoopUitkering ?? 0, startLeeftijd: (oudste.pensioenLeeftijd ?? 67.25) + oud.aankoopJaar, looptijd: 0, rente: 2 }];
+  }
+  return { ...d, pensioenen, simulatie: { scenarios: Array.isArray(oud.scenarios) ? oud.scenarios : [] } };
+}
 const KLEUREN = ["#c9a84c", "#a084c9", "#4caf8a", "#5b9bd5", "#e07b54"];
 
 export default function PensioenApp() {
@@ -383,7 +401,8 @@ export default function PensioenApp() {
   useEffect(() => {
     (async () => {
       try {
-        const saved = await dbGet("state");
+        const raw = await dbGet("state");
+        const saved = raw ? normaliseer(raw) : null;                  // fix-9
         if (saved) {
           if (saved.personen)   setPersonenRaw(saved.personen);
           if (saved.pensioenen) setPensioenenRaw(saved.pensioenen);
@@ -466,7 +485,7 @@ export default function PensioenApp() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const d = JSON.parse(ev.target.result);
+        const d = normaliseer(JSON.parse(ev.target.result));          // fix-9
         if (d.personen)   setPersonen(d.personen);
         if (d.pensioenen) setPensioenen(d.pensioenen);
         if (d.vermogen)   setVermogen(d.vermogen);
@@ -485,12 +504,13 @@ export default function PensioenApp() {
   // ─── Rekenkern per maand (fix-2) ──────────────────────────────────────────────
   // Alle bedragen blijven jaarbedragen (bedragJr); een moment start in de maand
   // waarin de leeftijd bereikt wordt.
-  function berekenMaand(abs) {
+  // fix-9: pers = personen met evt. scenario-instellingen (standaard de huidige)
+  function berekenMaand(abs, pers = personen) {
     const items = [];
     let totPensioenBruto = 0, totAowBruto = 0, totNetto = 0, totBelasting = 0, totZvw = 0;
     const perPersoon = {};
 
-    personen.forEach((persoon) => {
+    pers.forEach((persoon) => {
       const isSamen = isSamenwonend(persoon);
       const lftM = lftMaanden(persoon, abs);
       const eigenaarIdx = personenGesorteerd.findIndex(x => x.id === persoon.id);
@@ -514,13 +534,6 @@ export default function PensioenApp() {
           items.push({ type: "pensioen", naam: p.naam, bedragJr: Math.round(bedrag), eigenaar: persoon.naam, eigenaarIdx, isNetto: false });
         }
       });
-
-      if (persoon.id === personenGesorteerd[0]?.id && simulatie.aankoopJaar > 0 &&
-          lftM >= maandenVan(persoon.pensioenLeeftijd + simulatie.aankoopJaar)) {
-        const extra = simulatie.aankoopUitkering * 12;
-        persoonPensioenBruto += extra;
-        items.push({ type: "pensioen", naam: "Extra aankoop", bedragJr: extra, eigenaar: persoon.naam, eigenaarIdx, isNetto: false });
-      }
 
       const aowStartM = maandenVan(persoon.aowStartLeeftijd ?? 67.25);
       const aowGerechtigd = lftM >= aowStartM;
@@ -569,6 +582,37 @@ export default function PensioenApp() {
   }, [personen, personenGesorteerd, pensioenen]);
   const startJaar = Math.floor(startMaand / 12);
 
+  // ─── fix-9: kerncijfers van een scenario ──────────────────────────────────────
+  // Het salaris zit niet in de app; daarom kijken we vanaf het moment dat jullie
+  // ALLEBEI gestopt zijn tot de eindsituatie (alle AOW en pensioenen ingegaan).
+  function kerncijfers(pers) {
+    if (pers.length === 0) return null;
+    const stopAbs = pers.map(p => gebAbs(p) + maandenVan(p.pensioenLeeftijd ?? p.aowStartLeeftijd ?? 67.25));
+    const beginAbs = Math.max(...stopAbs);
+    let eindAbs = beginAbs;
+    pers.forEach(p => {
+      eindAbs = Math.max(eindAbs, gebAbs(p) + maandenVan(p.aowStartLeeftijd ?? 67.25));
+      pensioenen.filter(x => x.eigenaarId === p.id).forEach(x =>
+        eindAbs = Math.max(eindAbs, gebAbs(p) + maandenVan(isProduct(x) ? x.startLeeftijd : ingangLeeftijd(x, p))));
+    });
+    eindAbs = Math.min(eindAbs, beginAbs + 20 * 12);
+    const netto = (abs) => berekenMaand(abs, pers).totNettoMndZonderVermogen;
+    const eind = netto(eindAbs);
+    let laagste = eind, laagsteAbs = eindAbs, aanvulling = 0;
+    for (let a = beginAbs; a < eindAbs; a++) {
+      const n = netto(a);
+      if (n < laagste) { laagste = n; laagsteAbs = a; }
+      aanvulling += Math.max(0, eind - n);
+    }
+    const pensioenJr = pers.reduce((s, p) => s + pensioenen
+      .filter(x => x.eigenaarId === p.id && !isProduct(x) && x.totLeeftijd == null)
+      .reduce((t, x) => t + pensioenDetail(x, p).laag, 0), 0);
+    return { stopAbs, beginAbs, eindAbs, nettoBegin: netto(beginAbs), laagste, laagsteAbs, eind, aanvulling: Math.round(aanvulling), pensioenJr };
+  }
+  const SCEN_VELDEN = ["pensioenLeeftijd", "ingangModus", "ingangLeeftijd", "hoogLaag"];
+  const metInstellingen = (inst) => personen.map(p => ({ ...p, ...(inst?.[p.id] ?? {}) }));
+  const huidigeInstellingen = () => Object.fromEntries(personen.map(p => [p.id, Object.fromEntries(SCEN_VELDEN.map(k => [k, p[k]]))]));
+
   // ─── Tijdlijn momenten (per maand) ────────────────────────────────────────────
   const tijdlijnData = useMemo(() => {
     if (personen.length === 0) return [];
@@ -615,6 +659,24 @@ export default function PensioenApp() {
       return rij;
     });
   }, [personen, personenGesorteerd, pensioenen, vermogen, simulatie, startJaar]);
+
+  // fix-9: kolommen voor de vergelijking (alleen berekend op het tabblad Simulatie)
+  const vergelijking = useMemo(() => {
+    if (tab !== "simulatie" || personen.length === 0) return null;
+    const kolommen = [
+      { id: "door", naam: "Doorwerken tot AOW", pers: personen.map(doorwerkScenario), kleur: "#7a9bb0" },
+      { id: "huidig", naam: "Huidige instelling", pers: personen, kleur: "#c9a84c" },
+      ...(simulatie.scenarios ?? []).map((sc, i) => ({ id: sc.id, naam: sc.naam, inst: sc.instellingen, pers: metInstellingen(sc.instellingen), kleur: KLEUREN[(i + 1) % KLEUREN.length] })),
+    ];
+    kolommen.forEach(k => { k.kc = kerncijfers(k.pers); });
+    const van = Math.floor(Math.min(...kolommen.map(k => Math.min(...k.kc.stopAbs))) / 12);
+    const grafiek = Array.from({ length: 22 }, (_, i) => {
+      const jaar = van + i, rij = { jaar };
+      kolommen.forEach(k => { let t = 0; for (let m = 0; m < 12; m++) t += berekenMaand(jaar * 12 + m, k.pers).totNettoMndZonderVermogen; rij[k.id] = Math.round(t / 12); });
+      return rij;
+    });
+    return { kolommen, grafiek };
+  }, [tab, personen, pensioenen, simulatie]);
 
   if (!geladen) return <div style={{ background: "#0f1923", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#c9a84c", fontFamily: "Georgia,serif", fontSize: 18 }}>Gegevens laden...</div>;
 
@@ -711,10 +773,11 @@ export default function PensioenApp() {
                   </div>
                 );
               })()}
-              <StopScenario persoon={persoon} kleur={KLEUREN[pi % KLEUREN.length]}
-                pensioenen={pensioenen.filter(p => p.eigenaarId === persoon.id && !isProduct(p))}
-                partnerNaam={personen.find(p => p.id !== persoon.id)?.naam?.split(" ")[0]}
-                update={(velden) => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, ...velden } : p))} />
+              {/* fix-9: het scenario zelf staat op het tabblad Simulatie */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", background: "#111d26", border: `1px solid ${KLEUREN[pi % KLEUREN.length]}33`, borderRadius: 10, padding: "10px 14px", fontSize: 13, color: "#b8c8d4" }}>
+                <span>🎮 Stopt met werken op <strong style={{ color: KLEUREN[pi % KLEUREN.length] }}>{lftLabel(maandenVan(persoon.pensioenLeeftijd ?? 67.25))}</strong> ({datumBijLeeftijd(persoon, persoon.pensioenLeeftijd ?? 67.25)}) · {INGANG_TEKST[persoon.ingangModus ?? "standaard"]}{persoon.hoogLaag ? " · hoog-laag" : ""}</span>
+                <button onClick={() => setTab("simulatie")} style={btn(KLEUREN[pi % KLEUREN.length])}>Aanpassen in Simulatie →</button>
+              </div>
               <VerwijderKnop wat={`${persoon.naam} en alle pensioenen van deze persoon`} onVerwijder={() => { setPersonen(personen.filter(p => p.id !== persoon.id)); setPensioenen(pensioenen.filter(p => p.eigenaarId !== persoon.id)); }} />
             </Inklapbaar>
           ))}
@@ -799,14 +862,47 @@ export default function PensioenApp() {
         </Section>}
 
         {/* SIMULATIE */}
-        {tab === "simulatie" && <Section title="Pensioen aankoop simulatie">
-          <Inklapbaar titel="🎮 Extra aankoop" samenvatting={simulatie.aankoopJaar > 0 ? `€ ${simulatie.aankoopUitkering}/mnd, ${simulatie.aankoopJaar} jaar na pensionering` : "uit"}>
-          <Grid>
-            <Field label="Extra aankoop X jaar na 1e pensionering" value={simulatie.aankoopJaar} onChange={v=>setSimulatie({...simulatie,aankoopJaar:+v})} type="number" />
-            <Field label="Aankoopbedrag (€)" value={simulatie.aankoopBedrag} onChange={v=>setSimulatie({...simulatie,aankoopBedrag:+v})} type="number" />
-            <Field label="Extra uitkering per maand (€)" value={simulatie.aankoopUitkering} onChange={v=>setSimulatie({...simulatie,aankoopUitkering:+v})} type="number" />
-          </Grid>
-          </Inklapbaar>
+        {/* SIMULATIE (fix-9): scenario's stoppen met werken */}
+        {tab === "simulatie" && <Section title="Simulatie: wanneer stoppen we?">
+          {personen.length === 0 ? <p style={{ color: "#7a9bb0" }}>Importeer eerst je pensioenoverzicht.</p> : <>
+          <div style={{ padding: 12, background: "#1a2d3d", borderRadius: 10, border: "1px solid #2a4a5e", marginBottom: 20, fontSize: 13, color: "#b8c8d4", lineHeight: 1.6 }}>
+            Speel hier met <strong>wanneer ieder van jullie stopt met werken</strong> en <strong>wanneer het pensioen ingaat</strong>.
+            Wat je instelt, werkt direct door in de Prognose. Tevreden over een variant? <strong>Bewaar</strong> hem en vergelijk hem onderaan
+            met andere varianten en met doorwerken tot de AOW-leeftijd.
+          </div>
+          {personenGesorteerd.map((persoon, pi) => (
+            <StopScenario key={persoon.id} sub={false} persoon={persoon} kleur={KLEUREN[pi % KLEUREN.length]}
+              titel={<>{pi === 0 ? "👤" : "👥"} {persoon.naam}</>}
+              pensioenen={pensioenen.filter(p => p.eigenaarId === persoon.id && !isProduct(p))}
+              partnerNaam={personen.find(p => p.id !== persoon.id)?.naam?.split(" ")[0]}
+              update={(velden) => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, ...velden } : p))} />
+          ))}
+          {vergelijking && <>
+            <Inklapbaar titel="⚖️ Vergelijken" samenvatting={`${vergelijking.kolommen.length - 2} bewaard`}>
+              <BewaarScenario standaardNaam={personenGesorteerd.map(p => `${p.naam.split(" ")[0]} ${lftLabel(maandenVan(p.pensioenLeeftijd ?? 67.25))}`).join(" · ")}
+                onBewaar={naam => setSimulatie({ ...simulatie, scenarios: [...(simulatie.scenarios ?? []), { id: `sc_${Date.now()}`, naam, instellingen: huidigeInstellingen() }] })} />
+              <ScenarioVergelijking kolommen={vergelijking.kolommen} personenGesorteerd={personenGesorteerd}
+                onToepassen={inst => setPersonen(metInstellingen(inst))}
+                onVerwijder={id => setSimulatie({ ...simulatie, scenarios: simulatie.scenarios.filter(x => x.id !== id) })} />
+            </Inklapbaar>
+            <Inklapbaar titel="📈 Netto per maand per scenario" samenvatting="gemiddeld per jaar">
+              <div style={{ fontSize: 11, color: "#4a6a7e", marginBottom: 8 }}>Pensioen + AOW na belasting, zonder salaris en zonder spaargeld/woning.</div>
+              <ResponsiveContainer width="100%" height={260}>
+                <LineChart data={vergelijking.grafiek}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2a4a5e" />
+                  <XAxis dataKey="jaar" stroke="#7a9bb0" tick={{ fontSize: 11 }} />
+                  <YAxis stroke="#7a9bb0" tick={{ fontSize: 11 }} tickFormatter={v => `€${(v / 1000).toFixed(1)}k`} />
+                  <Tooltip formatter={v => [`€ ${Number(v).toLocaleString("nl-NL")}/mnd`]} contentStyle={{ background: "#0f1923", border: "1px solid #2a4a5e", borderRadius: 8, fontSize: 12 }} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  {vergelijking.kolommen.map(k => <Line key={k.id} type="stepAfter" dataKey={k.id} name={k.naam} stroke={k.kleur} strokeWidth={k.id === "huidig" ? 2.5 : 1.5} strokeDasharray={k.id === "door" ? "5 3" : undefined} dot={false} />)}
+                </LineChart>
+              </ResponsiveContainer>
+            </Inklapbaar>
+          </>}
+          <div style={{ fontSize: 12, color: "#7a9bb0", marginTop: 4 }}>
+            💶 Extra pensioen kopen (bijv. met spaargeld)? Voeg bij <a href="#" onClick={e => { e.preventDefault(); setTab("pensioenen"); }} style={{ color: "#c9a84c" }}>Pensioenen</a> een <strong>koopsom</strong> toe; die telt dan mee in alle scenario's.
+          </div>
+          </>}
         </Section>}
 
         {/* PROGNOSE */}
@@ -1017,13 +1113,75 @@ function RegelItem({ label, sublabel, bedrag, kleur, tag }) {
   );
 }
 
+// ─── fix-9: huidig scenario bewaren onder een naam ────────────────────────────
+function BewaarScenario({ standaardNaam, onBewaar }) {
+  const [naam, setNaam] = useState("");
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+      <input value={naam} placeholder={standaardNaam} onChange={e => setNaam(e.target.value)} style={{ ...inp, flex: "1 1 200px", width: "auto" }} aria-label="Naam van het scenario" />
+      <button onClick={() => { onBewaar(naam.trim() || standaardNaam); setNaam(""); }} style={btn("#4caf8a")}>💾 Huidige instelling bewaren</button>
+    </div>
+  );
+}
+
+// ─── fix-9: scenario's naast elkaar ───────────────────────────────────────────
+function ScenarioVergelijking({ kolommen, personenGesorteerd, onToepassen, onVerwijder }) {
+  const euro = (v) => `€ ${Math.round(v).toLocaleString("nl-NL")}`;
+  const ref = kolommen[0].kc;
+  const delta = (v, r) => { const d = Math.round(v - r); return d === 0 ? null : <div style={{ fontSize: 10, color: d < 0 ? "#e07b54" : "#4caf8a" }}>{d < 0 ? "−" : "+"}{euro(Math.abs(d))}</div>; };
+  const rijen = [
+    ...personenGesorteerd.map((p) => ({ label: `${p.naam.split(" ")[0]} stopt`, cel: (k) => {
+      const q = k.pers.find(x => x.id === p.id);
+      return <>{lftLabel(maandenVan(q.pensioenLeeftijd ?? 67.25))}<div style={{ fontSize: 10, color: "#4a6a7e" }}>{datumBijLeeftijd(q, q.pensioenLeeftijd ?? 67.25)}{q.hoogLaag ? " · hoog-laag" : ""}</div><div style={{ fontSize: 10, color: "#4a6a7e" }}>{INGANG_TEKST[q.ingangModus ?? "standaard"].replace("pensioen ", "")}</div></>;
+    } })),
+    { label: "Allebei gestopt", cel: (k) => absNaarLabel(k.kc.beginAbs) },
+    { label: "Netto/mnd direct daarna", cel: (k) => <>{euro(k.kc.nettoBegin)}{k.id !== "door" && delta(k.kc.nettoBegin, ref.nettoBegin)}</> },
+    { label: "Laagste netto/mnd", cel: (k) => <>{euro(k.kc.laagste)}<div style={{ fontSize: 10, color: "#4a6a7e" }}>{absNaarLabel(k.kc.laagsteAbs)}</div></> },
+    { label: "Netto/mnd eindsituatie", sub: "alle AOW en pensioenen ingegaan", cel: (k) => <>{euro(k.kc.eind)}<div style={{ fontSize: 10, color: "#4a6a7e" }}>vanaf {absNaarLabel(k.kc.eindAbs)}</div>{k.id !== "door" && delta(k.kc.eind, ref.eind)}</> },
+    { label: "Aanvulling nodig", sub: "om tot de eindsituatie al op dat niveau te leven", cel: (k) => <span style={{ color: k.kc.aanvulling > 0 ? "#e07b54" : undefined }}>{euro(k.kc.aanvulling)}</span> },
+    { label: "Levenslang pensioen", sub: "bruto per jaar, vanaf AOW", cel: (k) => <>{euro(k.kc.pensioenJr)}{k.id !== "door" && delta(k.kc.pensioenJr, ref.pensioenJr)}</> },
+  ];
+  return (
+    <div>
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: "100%" }}>
+        <thead><tr>
+          <th style={{ ...thK, textAlign: "left", position: "sticky", left: 0, background: "#1a2d3d" }}></th>
+          {kolommen.map(k => (
+            <th key={k.id} style={{ ...thK, color: k.kleur, minWidth: 108, verticalAlign: "top" }}>
+              {k.naam}
+              {k.inst && <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", marginTop: 6, flexWrap: "wrap" }}>
+                <button onClick={() => onToepassen(k.inst)} style={{ ...btn(k.kleur), padding: "3px 8px", fontSize: 11 }}>Toepassen</button>
+                <VerwijderKnop compact wat={`"${k.naam}"`} onVerwijder={() => onVerwijder(k.id)} />
+              </div>}
+            </th>
+          ))}
+        </tr></thead>
+        <tbody>
+          {rijen.map((r, ri) => (
+            <tr key={ri} style={{ borderTop: "1px solid #2a4a5e55" }}>
+              <td style={{ ...celK, textAlign: "left", color: "#b8c8d4", position: "sticky", left: 0, background: "#1a2d3d", minWidth: 110 }}>{r.label}{r.sub && <div style={{ fontSize: 10, color: "#4a6a7e" }}>{r.sub}</div>}</td>
+              {kolommen.map(k => <td key={k.id} style={{ ...celK, color: k.id === "huidig" ? "#e8dcc8" : "#a0b8c8" }}>{r.cel(k)}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+      <div style={{ fontSize: 11, color: "#4a6a7e", marginTop: 8 }}>
+        Bedragen: pensioen + AOW na belasting, voor jullie samen, zonder salaris, spaargeld en woning. Verschillen (rood/groen) zijn t.o.v. doorwerken tot de AOW-leeftijd.
+        Stopt een van jullie eerder dan de ander, dan valt diens salaris in de tussentijd weg; dat rekent de app niet mee.
+      </div>
+    </div>
+  );
+}
+
 // ─── fix-7: balk op Prognose om per persoon met de stopleeftijd te spelen ─────
 function ScenarioBalk({ personenGesorteerd, personen, setPersonen }) {
   if (personenGesorteerd.length === 0) return null;
-  const tekst = { standaard: "pensioen op standaardleeftijd", stoppen: "pensioen direct bij stoppen", eigen: "pensioen op eigen leeftijd" };
+  const tekst = INGANG_TEKST;
   return (
     <div style={{ padding: "12px 14px 4px", background: "#1a2d3d", borderRadius: 10, border: "1px solid #2a4a5e", marginBottom: 20 }}>
-      <div style={{ color: "#7a9bb0", fontSize: 12, marginBottom: 8 }}>🎮 Stoppen met werken — schuif en zie direct het effect</div>
+      <div style={{ color: "#7a9bb0", fontSize: 12, marginBottom: 8 }}>🎮 Stoppen met werken — schuif en zie direct het effect <span style={{ color: "#4a6a7e" }}>(meer opties en vergelijken: tabblad Simulatie)</span></div>
       {personenGesorteerd.map((persoon, pi) => {
         const kleur = KLEUREN[pi % KLEUREN.length];
         const aowLft = persoon.aowStartLeeftijd ?? 67.25;
@@ -1059,7 +1217,7 @@ function LeeftijdSchuif({ label, persoon, waarde, min, max, onChange, kleur = "#
 }
 
 // ─── fix-7: scenario stoppen met werken ──────────────────────────────────────
-function StopScenario({ persoon, pensioenen, kleur, partnerNaam, update }) {
+function StopScenario({ persoon, pensioenen, kleur, partnerNaam, update, titel, sub = true }) {
   const aowLft = persoon.aowStartLeeftijd ?? 67.25;
   const stop   = persoon.pensioenLeeftijd ?? aowLft;
   const modus  = persoon.ingangModus ?? "standaard";
@@ -1075,6 +1233,8 @@ function StopScenario({ persoon, pensioenen, kleur, partnerNaam, update }) {
   const verschil = totNa - totRef;
   const heeftHoogLaag = persoon.hoogLaag && levenslang.some(r => r.nu.ingang < aowLft - 1e-6);
   const kanHoogLaag = levenslang.some(r => r.nu.ingang < aowLft - 1e-6);
+  // fix-9: hoog-laag uitzetten als het niet (meer) kan, zodat samenvattingen kloppen
+  useEffect(() => { if (persoon.hoogLaag && !kanHoogLaag) update({ hoogLaag: false }); }, [persoon.hoogLaag, kanHoogLaag]);
 
   const eersteIngang = rijen.length ? Math.min(...rijen.map(r => r.nu.ingang)) : aowLft;
   const mndZonderAow = Math.max(0, maandenVan(aowLft) - maandenVan(stop));
@@ -1087,7 +1247,7 @@ function StopScenario({ persoon, pensioenen, kleur, partnerNaam, update }) {
   const melding = (k) => ({ fontSize: 12, padding: "8px 12px", borderRadius: 8, marginTop: 6, background: k === "let" ? "#2d1a0e" : "#111d26", border: `1px solid ${k === "let" ? "#e07b5433" : "#2a4a5e"}`, color: k === "let" ? "#e0a07b" : "#b8c8d4" });
 
   return (
-    <Inklapbaar sub kleur={kleur} titel="🎮 Scenario: stoppen met werken"
+    <Inklapbaar sub={sub} kleur={kleur} titel={titel ?? "🎮 Scenario: stoppen met werken"}
       samenvatting={`stopt ${lftLabel(maandenVan(stop))} · pensioen ${euro(totNa / 12)}/mnd${Math.round(verschil) !== 0 ? ` (${metTeken(verschil / 12)})` : ""}`}>
       <LeeftijdSchuif label="Stopt met werken op" persoon={persoon} waarde={stop} min={55} max={aowLft + MAX_UITSTEL} kleur={kleur}
         onChange={v => update({ pensioenLeeftijd: v })} />
@@ -1273,7 +1433,7 @@ function Inklapbaar({ titel, samenvatting, kleur = "#c9a84c", standaardOpen = tr
 }
 
 // ─── fix-6: veilig verwijderen (eerst bevestigen) ─────────────────────────────
-function VerwijderKnop({ wat, onVerwijder }) {
+function VerwijderKnop({ wat, onVerwijder, compact = false }) {
   const [bevestig, setBevestig] = useState(false);
   useEffect(() => {
     if (!bevestig) return;
@@ -1282,9 +1442,9 @@ function VerwijderKnop({ wat, onVerwijder }) {
   }, [bevestig]);
   const basis = { borderRadius: 6, cursor: "pointer", fontSize: 12, padding: "5px 12px", fontFamily: "inherit" };
   return (
-    <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 10, paddingTop: 10, borderTop: "1px solid #2a4a5e" }}>
+    <div style={compact ? { display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap", justifyContent: "flex-end" } : { display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 10, paddingTop: 10, borderTop: "1px solid #2a4a5e" }}>
       {!bevestig
-        ? <button onClick={() => setBevestig(true)} style={{ ...basis, background: "transparent", border: "1px solid #2a4a5e", color: "#7a9bb0" }}>🗑 Verwijderen</button>
+        ? <button onClick={() => setBevestig(true)} aria-label={`${wat} verwijderen`} style={{ ...basis, background: "transparent", border: "1px solid #2a4a5e", color: "#7a9bb0", ...(compact ? { padding: "3px 7px", fontSize: 11 } : {}) }}>{compact ? "🗑" : "🗑 Verwijderen"}</button>
         : <>
             <span style={{ fontSize: 12, color: "#e07b54" }}>{wat} verwijderen?</span>
             <button onClick={() => setBevestig(false)} style={{ ...basis, background: "transparent", border: "1px solid #3a5a6e", color: "#b8c8d4" }}>Annuleren</button>
