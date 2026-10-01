@@ -1,4 +1,12 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-7: scenario "eerder (of later) stoppen met werken" per persoon:
+//        - schuifregelaar voor de stopleeftijd (per maand)
+//        - pensioenopbouw loopt door tot de stopleeftijd (Opgebouwd → TeBereiken uit het XML)
+//        - pensioen laten ingaan: standaard / direct bij stoppen / eigen leeftijd (vanaf 60),
+//          met een actuariële vervroegings-/uitstelfactor (schatting)
+//        - optie hoog-laag (100:75) tot de AOW-leeftijd
+//        - overzicht: per regeling doorwerken vs. scenario, inkomensgat, risico partnerpensioen
+//        - AOW gecorrigeerd: opbouw gaat door zolang je in NL woont, ook als je stopt met werken
 // fix-6: - verwijderen vraagt eerst om bevestiging (VerwijderKnop i.p.v. rode ✕)
 //        - alle blokken inklapbaar (Inklapbaar), met samenvatting als ze dicht zijn
 //        - "+ Pensioen" per persoon i.p.v. één knop die altijd bij de oudste toevoegde
@@ -26,7 +34,7 @@ import { useState, useMemo, useEffect } from "react";
 import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-6";
+const FIX_NR = "fix-7";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -153,67 +161,94 @@ function productUitkering(p, persoon) {
   return { bedragJr: p.bruto_jaar ?? 0, kapitaal: 0, totLeeftijd: p.totLeeftijd, geschat: false };
 }
 
-// Bereken de verwachte AOW bij een gegeven pensioenleeftijd
-// - bij normale leeftijd (>= aowStartLeeftijd): volledige AOW
-// - bij eerder stoppen: huidig opgebouwde % + nog op te bouwen jaren tot pensioenleeftijd
+// Verwachte AOW op de AOW-leeftijd (fix-7)
+// AOW bouw je op door in Nederland te WONEN (2% per jaar in de 50 jaar vóór je AOW-leeftijd),
+// niet door te werken. Eerder stoppen met werken verandert de AOW dus niet.
+// Bron: TeBereiken uit het XML (gaat uit van blijven wonen in NL); anders een schatting.
 function berekenAOWBijPensioen(persoon) {
-  const { geboortejaar, pensioenLeeftijd, aowStartLeeftijd, aowSamen, aowAlleen } = persoon;
-  const aowLft = aowStartLeeftijd ?? 67.25;
+  const { aowSamen, aowAlleen, aowTeBereikenSamen, aowTeBereikenAlleen } = persoon;
+  const aowLft = persoon.aowStartLeeftijd ?? 67.25;
+  const vol = (samen, alleen) => ({ samen, alleen, pctOpbouw: Math.round(samen / AOW_VOLLEDIG_SAMEN * 100), volledig: samen >= AOW_VOLLEDIG_SAMEN * 0.995 });
 
-  // Zonder MPO data: gebruik volledige AOW als default
-  if (!aowSamen || aowSamen === 0) {
-    return {
-      samen:  AOW_VOLLEDIG_SAMEN,
-      alleen: AOW_VOLLEDIG_ALLEEN,
-      volledig: true,
-      pctOpbouw: 100,
-      kortingPerJaar: 0,
-    };
-  }
+  if (aowTeBereikenSamen > 0) return vol(aowTeBereikenSamen, aowTeBereikenAlleen || Math.round(aowTeBereikenSamen * AOW_VOLLEDIG_ALLEEN / AOW_VOLLEDIG_SAMEN));
+  if (!aowSamen) return vol(AOW_VOLLEDIG_SAMEN, AOW_VOLLEDIG_ALLEEN);       // geen MPO-data: volledige AOW
 
-  // Normale pensionering: volledig opgebouwd
-  if (pensioenLeeftijd >= aowLft) {
-    return {
-      samen:  AOW_VOLLEDIG_SAMEN,
-      alleen: AOW_VOLLEDIG_ALLEEN,
-      volledig: true,
-      pctOpbouw: 100,
-      kortingPerJaar: 0,
-    };
-  }
-
-  // Eerder stoppen: bereken opbouw op pensioenleeftijd
-  // Huidige opbouw als percentage
-  const pctNu = aowSamen / AOW_VOLLEDIG_SAMEN;
-  const jarenNu = pctNu * AOW_MAX_JAREN;
-
-  // Leeftijd op peildatum (benadering obv geboortejaar)
-  const lftNu = JAAR_NU - geboortejaar;
-
-  // Extra jaren tot pensioenleeftijd
-  const extraJaren = Math.max(0, pensioenLeeftijd - lftNu);
-  const totaleJaren = Math.min(AOW_MAX_JAREN, jarenNu + extraJaren);
-  const pctBijPensioen = totaleJaren / AOW_MAX_JAREN;
-
-  const samen  = Math.round(AOW_VOLLEDIG_SAMEN  * pctBijPensioen);
-  const alleen = Math.round(AOW_VOLLEDIG_ALLEEN * pctBijPensioen);
-
-  // Korting per jaar eerder stoppen (voor weergave)
-  const jarenEerder = aowLft - pensioenLeeftijd;
-  const kortingPerJaar = jarenEerder > 0
-    ? Math.round((AOW_VOLLEDIG_SAMEN - samen) / jarenEerder)
-    : 0;
-
-  return {
-    samen,
-    alleen,
-    volledig: false,
-    pctOpbouw: Math.round(pctBijPensioen * 100),
-    kortingPerJaar,
-    jarenEerder: +jarenEerder.toFixed(1),
-    verschilSamen: AOW_VOLLEDIG_SAMEN - samen,
-  };
+  // Schatting: huidige opbouw + 2% per nog te wonen jaar tot de AOW-leeftijd
+  const lftNu = lftMaanden(persoon, NU_ABS) / 12;
+  let pct = aowSamen / AOW_VOLLEDIG_SAMEN + Math.max(0, aowLft - lftNu) / AOW_MAX_JAREN;
+  if (pct > 0.99) pct = 1;                                                  // afrondingsverschillen
+  pct = Math.min(1, pct);
+  return vol(Math.round(AOW_VOLLEDIG_SAMEN * pct), Math.round(AOW_VOLLEDIG_ALLEEN * pct));
 }
+
+// ─── Eerder/later stoppen en pensioeningang (fix-7) ───────────────────────────
+// Actuariële schatting met een eenvoudige sterftetafel (Gompertz) en rekenrente.
+// Gekalibreerd zodat ingang op 62 i.p.v. 67j3m ≈ 28% lager uitkomt (orde van ABP-factoren).
+const ACT = { modaal: 89, spreiding: 9, rente: 0.025 };
+const overleving = (x, y) => Math.exp(Math.exp((x - ACT.modaal) / ACT.spreiding) - Math.exp((y - ACT.modaal) / ACT.spreiding));
+const pvCache = new Map();
+// Contante waarde op leeftijd x van €1/jaar levenslang, vanaf leeftijd s
+function pvUitkering(x, s) {
+  const key = `${x.toFixed(4)}|${s.toFixed(4)}`;
+  if (pvCache.has(key)) return pvCache.get(key);
+  let v = 0;
+  for (let t = s; t < 110; t += 1 / 12) v += (1 / 12) * Math.pow(1 + ACT.rente, -(t - x)) * overleving(x, t);
+  pvCache.set(key, v);
+  return v;
+}
+// Factor waarmee een levenslang pensioen (berekend op rekenleeftijd) wijzigt bij een andere ingang
+function ingangsFactor(ingang, rekenLft) {
+  if (Math.abs(ingang - rekenLft) < 1e-6) return 1;
+  const x = Math.min(ingang, rekenLft);
+  return pvUitkering(x, rekenLft) / pvUitkering(x, ingang);
+}
+const MIN_INGANG = 60;      // ABP: vanaf de maand waarin je 60 wordt
+const MAX_UITSTEL = 5;      // tot 5 jaar na de AOW-leeftijd
+const standAbs = (p) => { const [j, m] = (p.standPer ?? "").split("-").map(Number); return j > 0 ? j * 12 + ((m || 1) - 1) : NU_ABS; };
+
+// Opbouw tot de stopleeftijd, uitgedrukt als jaarbedrag op de rekenleeftijd (lineair tussen
+// Opgebouwd op StandPer en TeBereiken; de opbouw loopt hooguit tot rekenleeftijd/AOW-leeftijd)
+function opbouwBijStoppen(p, persoon) {
+  const opg = p.opgebouwd ?? p.bruto_jaar ?? 0;
+  const teb = p.teBereiken ?? opg;
+  if (teb <= opg) return opg;
+  const g = gebAbs(persoon);
+  const eindAbs = g + maandenVan(Math.min(p.startLeeftijd, persoon.aowStartLeeftijd ?? 67.25));
+  const stopAbs = g + maandenVan(persoon.pensioenLeeftijd ?? p.startLeeftijd);
+  const st = standAbs(p);
+  const totaal = eindAbs - st;
+  if (totaal <= 0) return teb;
+  const gewerkt = Math.max(0, Math.min(stopAbs, eindAbs) - st);
+  return opg + (teb - opg) * gewerkt / totaal;
+}
+
+function ingangLeeftijd(p, persoon) {
+  if (p.totLeeftijd != null) return p.startLeeftijd;                    // tijdelijke uitkering: niet verschuiven
+  const modus = persoon.ingangModus ?? "standaard";
+  const i = modus === "stoppen" ? persoon.pensioenLeeftijd
+          : modus === "eigen"   ? (persoon.ingangLeeftijd ?? p.startLeeftijd)
+          : p.startLeeftijd;
+  return Math.min((persoon.aowStartLeeftijd ?? 67.25) + MAX_UITSTEL, Math.max(MIN_INGANG, i));
+}
+
+// { basis (op rekenleeftijd), ingang, factor, bedrag (levenslang), hoog, laag, aow }
+function pensioenDetail(p, persoon) {
+  const basis  = opbouwBijStoppen(p, persoon);
+  const ingang = ingangLeeftijd(p, persoon);
+  const factor = p.totLeeftijd != null ? 1 : ingangsFactor(ingang, p.startLeeftijd);
+  const bedrag = basis * factor;
+  const aow = persoon.aowStartLeeftijd ?? 67.25;
+  let hoog = bedrag, laag = bedrag;
+  if (persoon.hoogLaag && p.totLeeftijd == null && ingang < aow - 1e-6) {
+    // Hoog tot AOW, daarna 75% daarvan; zelfde contante waarde
+    const totaal = pvUitkering(ingang, ingang), naAow = pvUitkering(ingang, aow);
+    hoog = bedrag * totaal / (totaal - 0.25 * naAow);
+    laag = 0.75 * hoog;
+  }
+  return { basis, ingang, factor, bedrag, hoog, laag, aow };
+}
+// Zelfde persoon, maar doorwerken tot de AOW-leeftijd en standaard ingang (referentie)
+const doorwerkScenario = (persoon) => ({ ...persoon, pensioenLeeftijd: persoon.aowStartLeeftijd ?? 67.25, ingangModus: "standaard", hoogLaag: false });
 
 // ─── Parsers (ongewijzigd t.o.v. v9) ─────────────────────────────────────────
 function parseerJSON(tekst) {
@@ -226,12 +261,13 @@ function parseerJSON(tekst) {
     (blok.IndicatiefPensioen ?? []).forEach((p) => {
       const h = p.HerkenningsNummer; if (!h) return;
       if (!polisFirstSeen[h]) polisFirstSeen[h] = { startLft, naam: p.PensioenUitvoerder, standPer: p.StandPer };
-      polisLastSeen[h] = { bedrag: p.Opgebouwd ?? p.TeBereiken ?? 0, isLevenslang, blok };
+      polisLastSeen[h] = { bedrag: p.Opgebouwd ?? p.TeBereiken ?? 0, opg: p.Opgebouwd ?? null, teb: p.TeBereiken ?? null, isLevenslang, blok };
     });
   });
   const polissen = Object.keys(polisFirstSeen).map(h => ({
     id: `${h}@${polisFirstSeen[h].startLft}`, naam: polisFirstSeen[h].naam, herkenning: h, type: "pensioen",
     bruto_jaar: polisLastSeen[h].bedrag, startLeeftijd: polisFirstSeen[h].startLft,
+    opgebouwd: polisLastSeen[h].opg ?? polisLastSeen[h].bedrag, teBereiken: polisLastSeen[h].teb ?? polisLastSeen[h].bedrag,   // fix-7
     totLeeftijd: polisLastSeen[h].isLevenslang ? null : (() => {
       const lb = [...details].reverse().find(b => (b.IndicatiefPensioen ?? []).some(p => p.HerkenningsNummer === h));
       const tot = lb?.Tot?.Leeftijd;
@@ -261,7 +297,7 @@ function parseerXML(tekst) {
   const levensSituatie = t(doc, "LevensSituatie");
   const samenwonend = levensSituatie ? !/alleen/i.test(levensSituatie) : null;
   const polisFirstSeen = {}, polisLastSeen = {};
-  let aowSamen = 0, aowAlleen = 0, aowStart = 67.25;
+  let aowSamen = 0, aowAlleen = 0, aowStart = 67.25, aowTebSamen = 0, aowTebAlleen = 0;
   const blokken = g(doc, "OuderdomsPensioen");
   for (let b = 0; b < blokken.length; b++) {
     const blok = blokken[b];
@@ -271,23 +307,33 @@ function parseerXML(tekst) {
     const isLevenslang = totEl && t(totEl, "Jaren") === "";
     const totLftNum = totEl && t(totEl, "Jaren") !== "" ? parseInt(t(totEl, "Jaren") || "0") + parseInt(t(totEl, "Maanden") || "0") / 12 : null;
     const aowEl = g(blok, "AOWDetailsOpbouw")[0];
-    if (aowEl) { const s = parseInt(t(aowEl, "OpgebouwdSamenwonend") || "0"); if (s > aowSamen) { aowSamen = s; aowAlleen = parseInt(t(aowEl, "OpgebouwdAlleenstaand") || "0"); aowStart = startLft; } }
+    if (aowEl) { const s = parseInt(t(aowEl, "OpgebouwdSamenwonend") || "0"); if (s > aowSamen) { aowSamen = s; aowAlleen = parseInt(t(aowEl, "OpgebouwdAlleenstaand") || "0"); aowStart = startLft; aowTebSamen = parseInt(t(aowEl, "TeBereikenSamenwonend") || "0"); aowTebAlleen = parseInt(t(aowEl, "TeBereikenAlleenstaand") || "0"); } }
     let polissen = g(blok, "IndicatiefPensioen");
     if (polissen.length === 0) polissen = g(blok, "Pensioen");
     for (let p = 0; p < polissen.length; p++) {
       const pEl = polissen[p]; const h = t(pEl, "HerkenningsNummer"); if (!h) continue;
-      const bedrag = parseInt(t(pEl, "Opgebouwd") || "0") || parseInt(t(pEl, "TeBereiken") || "0");
+      const opg = parseInt(t(pEl, "Opgebouwd") || "0"), teb = parseInt(t(pEl, "TeBereiken") || "0");
+      const bedrag = opg || teb;
       if (!polisFirstSeen[h]) polisFirstSeen[h] = { startLft, naam: t(pEl, "PensioenUitvoerder") || "Onbekend", standPer: t(pEl, "StandPer") };
-      polisLastSeen[h] = { bedrag, isLevenslang, totLftNum };
+      polisLastSeen[h] = { bedrag, opg: opg || teb, teb: Math.max(teb, opg), isLevenslang, totLftNum };
     }
   }
   const polissen = Object.keys(polisFirstSeen).map(h => ({
     id: `${h}@${polisFirstSeen[h].startLft}`, naam: polisFirstSeen[h].naam, herkenning: h, type: "pensioen",
     bruto_jaar: polisLastSeen[h].bedrag, startLeeftijd: polisFirstSeen[h].startLft,
+    opgebouwd: polisLastSeen[h].opg, teBereiken: polisLastSeen[h].teb,                                // fix-7
     totLeeftijd: polisLastSeen[h].isLevenslang ? null : polisLastSeen[h].totLftNum,
     standPer: polisFirstSeen[h].standPer,
   }));
-  return { pensioenen: polissen, aow: { samen: aowSamen, alleen: aowAlleen, startLeeftijd: aowStart }, naam, geboortejaar, geboortemaand, samenwonend };
+  // fix-7: partnerpensioen (vóór pensioeningang) — verzekerd (incl. risicodekking) vs. opgebouwd
+  const partner = { verzekerd: 0, opgebouwd: 0 };
+  const ppTot = g(doc, "PartnerPensioenTotaal")[0];
+  if (ppTot) for (const el of Array.from(ppTot.children)) {
+    if (el.localName !== "Pensioen" && el.localName !== "IndicatiefPensioen") continue;
+    partner.verzekerd += parseInt(t(el, "VerzekerdBedrag") || "0");
+    partner.opgebouwd += parseInt(t(el, "OpgebouwdBedrag") || "0");
+  }
+  return { pensioenen: polissen, aow: { samen: aowSamen, alleen: aowAlleen, startLeeftijd: aowStart, teBereikenSamen: aowTebSamen, teBereikenAlleen: aowTebAlleen }, partner, naam, geboortejaar, geboortemaand, samenwonend };
 }
 
 function parseerBestand(inhoud, naam) {
@@ -364,14 +410,19 @@ export default function PensioenApp() {
         const result = parseerBestand(ev.target.result, file.name);
         if (!result.pensioenen?.length) { setImportStatus({ ok: false, tekst: "❌ Geen pensioenregelingen gevonden." }); return; }
         let eigenaarId, nieuwePersonen = [...personen];
+        // fix-7: AOW te bereiken + partnerpensioen (alleen als het overzicht ze bevat)
+        const extra = {
+          ...(result.aow.teBereikenSamen > 0 ? { aowTeBereikenSamen: result.aow.teBereikenSamen, aowTeBereikenAlleen: result.aow.teBereikenAlleen } : {}),
+          ...(result.partner && result.partner.verzekerd + result.partner.opgebouwd > 0 ? { partnerVerzekerd: result.partner.verzekerd, partnerOpgebouwd: result.partner.opgebouwd } : {}),
+        };
         if (result.naam) {
           const bestaand = personen.find(p => p.naam === result.naam);
           if (bestaand) {
             eigenaarId = bestaand.id;
-            nieuwePersonen = nieuwePersonen.map(p => p.id === eigenaarId ? { ...p, geboortejaar: result.geboortejaar ?? p.geboortejaar, geboortemaand: result.geboortemaand ?? p.geboortemaand, samenwonend: result.samenwonend ?? p.samenwonend, aowSamen: result.aow.samen || p.aowSamen, aowAlleen: result.aow.alleen || p.aowAlleen, aowStartLeeftijd: result.aow.startLeeftijd ?? p.aowStartLeeftijd } : p);
+            nieuwePersonen = nieuwePersonen.map(p => p.id === eigenaarId ? { ...p, ...extra, geboortejaar: result.geboortejaar ?? p.geboortejaar, geboortemaand: result.geboortemaand ?? p.geboortemaand, samenwonend: result.samenwonend ?? p.samenwonend, aowSamen: result.aow.samen || p.aowSamen, aowAlleen: result.aow.alleen || p.aowAlleen, aowStartLeeftijd: result.aow.startLeeftijd ?? p.aowStartLeeftijd } : p);
           } else {
             eigenaarId = `persoon_${Date.now()}`;
-            nieuwePersonen = [...personen, { id: eigenaarId, naam: result.naam, geboortejaar: result.geboortejaar ?? 1970, geboortemaand: result.geboortemaand ?? 1, samenwonend: result.samenwonend ?? undefined, pensioenLeeftijd: result.aow.startLeeftijd ?? 67.25, aowSamen: result.aow.samen, aowAlleen: result.aow.alleen, aowStartLeeftijd: result.aow.startLeeftijd ?? 67.25 }];
+            nieuwePersonen = [...personen, { id: eigenaarId, naam: result.naam, ...extra, geboortejaar: result.geboortejaar ?? 1970, geboortemaand: result.geboortemaand ?? 1, samenwonend: result.samenwonend ?? undefined, pensioenLeeftijd: result.aow.startLeeftijd ?? 67.25, aowSamen: result.aow.samen, aowAlleen: result.aow.alleen, aowStartLeeftijd: result.aow.startLeeftijd ?? 67.25 }];
           }
         } else {
           if (personen.length === 0) {
@@ -437,11 +488,19 @@ export default function PensioenApp() {
       let persoonPensioenBruto = 0;
 
       pensioenen.filter(p => p.eigenaarId === persoon.id).forEach((p) => {
-        const pu = productUitkering(p, persoon);                          // fix-5
-        const gestart = lftM >= maandenVan(p.startLeeftijd);
-        const gestopt = pu.totLeeftijd != null && lftM >= maandenVan(pu.totLeeftijd);
+        let gestart, gestopt, bedrag;
+        if (isProduct(p)) {
+          const pu = productUitkering(p, persoon);                        // fix-5
+          gestart = lftM >= maandenVan(p.startLeeftijd);
+          gestopt = pu.totLeeftijd != null && lftM >= maandenVan(pu.totLeeftijd);
+          bedrag = pu.bedragJr;
+        } else {
+          const d = pensioenDetail(p, persoon);                           // fix-7
+          gestart = lftM >= maandenVan(d.ingang);
+          gestopt = p.totLeeftijd != null && lftM >= maandenVan(p.totLeeftijd);
+          bedrag = lftM < maandenVan(d.aow) ? d.hoog : d.laag;
+        }
         if (gestart && !gestopt) {
-          const bedrag = pu.bedragJr;
           persoonPensioenBruto += bedrag;
           items.push({ type: "pensioen", naam: p.naam, bedragJr: Math.round(bedrag), eigenaar: persoon.naam, eigenaarIdx, isNetto: false });
         }
@@ -488,14 +547,17 @@ export default function PensioenApp() {
     };
   }
 
-  // Eerste maand: vroegste pensioenstart van de oudste persoon
+  // Eerste maand: vroegste inkomen van wie dan ook (fix-7: ingang kan verschoven zijn)
   const startMaand = useMemo(() => {
     if (personenGesorteerd.length === 0) return JAAR_NU * 12;
+    const starts = [];
+    personen.forEach(persoon => {
+      pensioenen.filter(p => p.eigenaarId === persoon.id).forEach(p =>
+        starts.push(gebAbs(persoon) + maandenVan(isProduct(p) ? p.startLeeftijd : ingangLeeftijd(p, persoon))));
+    });
     const oudste = personenGesorteerd[0];
-    const eigenPens = pensioenen.filter(p => p.eigenaarId === oudste.id);
-    const vroegsteLft = eigenPens.length > 0 ? Math.min(...eigenPens.map(p => p.startLeeftijd)) : oudste.pensioenLeeftijd;
-    return gebAbs(oudste) + maandenVan(vroegsteLft);
-  }, [personenGesorteerd, pensioenen]);
+    return starts.length > 0 ? Math.min(...starts) : gebAbs(oudste) + maandenVan(oudste.pensioenLeeftijd);
+  }, [personen, personenGesorteerd, pensioenen]);
   const startJaar = Math.floor(startMaand / 12);
 
   // ─── Tijdlijn momenten (per maand) ────────────────────────────────────────────
@@ -617,49 +679,33 @@ export default function PensioenApp() {
                     <option value="alleen">Alleenstaand</option>
                   </select>
                 </div>
-                <div>
-                  <label style={lbl}>Pensioenleeftijd{pi > 0 && <span style={{ color: "#a084c9", fontSize: 10, marginLeft: 6 }}>← speel hiermee</span>}</label>
-                  <input type="number" step="0.25" value={persoon.pensioenLeeftijd} onChange={e => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, pensioenLeeftijd: +e.target.value } : p))} style={inp} />
-                  <div style={{ fontSize: 10, color: "#4a6a7e", marginTop: 3 }}>= {datumBijLeeftijd(persoon, +persoon.pensioenLeeftijd)}</div>
-                </div>
                 <Field label="AOW vanaf leeftijd" value={persoon.aowStartLeeftijd ?? 67.25} onChange={v => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, aowStartLeeftijd: +v } : p))} type="number" />
               </Grid>
+              {/* fix-7: AOW hangt af van wonen in NL, niet van werken */}
               {persoon.aowSamen > 0 && (() => {
                 const aow = berekenAOWBijPensioen(persoon);
                 const kleur = KLEUREN[pi % KLEUREN.length];
                 return (
-                  <div style={{ marginTop: 10 }}>
-                    {/* Huidig opgebouwde AOW (uit MPO) */}
+                  <div style={{ marginTop: 10, marginBottom: 14 }}>
                     <div style={{ fontSize: 11, color: "#7a9bb0", marginBottom: 6 }}>
-                      AOW opgebouwd per {new Date().toLocaleDateString("nl-NL", { month: "long", year: "numeric" })}
-                      <span style={{ marginLeft: 8, color: "#4a6a7e" }}>(uit mijnpensioenoverzicht)</span>
+                      AOW (uit mijnpensioenoverzicht) · ingang {datumBijLeeftijd(persoon, persoon.aowStartLeeftijd ?? 67.25)}
                     </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
-                      <KPI label="AOW nu opgebouwd — samen" value={`€ ${persoon.aowSamen.toLocaleString("nl-NL")}/jr`} kleur="#4a6a7e" />
-                      <KPI label="AOW nu opgebouwd — alleen" value={`€ ${persoon.aowAlleen.toLocaleString("nl-NL")}/jr`} kleur="#4a6a7e" />
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(185px,1fr))", gap: 8 }}>
+                      <KPI label="Nu opgebouwd — samen" value={`€ ${persoon.aowSamen.toLocaleString("nl-NL")}/jr`} kleur="#4a6a7e" />
+                      <KPI label="Verwacht op AOW-leeftijd — samen" value={`€ ${aow.samen.toLocaleString("nl-NL")}/jr`} kleur={aow.volledig ? "#4caf8a" : kleur} />
+                      <KPI label="Verwacht op AOW-leeftijd — alleen" value={`€ ${aow.alleen.toLocaleString("nl-NL")}/jr`} kleur={aow.volledig ? "#4caf8a" : kleur} />
                     </div>
-                    {/* Verwachte AOW bij gekozen pensioenleeftijd */}
-                    <div style={{ fontSize: 11, color: "#7a9bb0", marginBottom: 6 }}>
-                      AOW bij pensionering op leeftijd <strong style={{ color: kleur }}>{persoon.pensioenLeeftijd}</strong>
-                      {aow.volledig
-                        ? <span style={{ marginLeft: 8, color: "#4caf8a" }}>✓ volledig opgebouwd (100%)</span>
-                        : <span style={{ marginLeft: 8, color: "#e07b54" }}>⚠ {aow.pctOpbouw}% opgebouwd — {aow.jarenEerder} jaar eerder gestopt</span>
-                      }
+                    <div style={{ fontSize: 11, color: aow.volledig ? "#4a6a7e" : "#e07b54", marginTop: 6 }}>
+                      {aow.volledig ? "✓ Volledige AOW (100%). " : `⚠ ${aow.pctOpbouw}% — er zitten jaren buiten Nederland in je woonperiode. `}
+                      AOW bouw je op door in Nederland te wonen, niet door te werken: eerder stoppen verandert je AOW niet.
                     </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                      <KPI label="AOW bij pensioen — samen" value={`€ ${aow.samen.toLocaleString("nl-NL")}/jr`} kleur={aow.volledig ? "#4caf8a" : kleur} />
-                      <KPI label="AOW bij pensioen — alleen" value={`€ ${aow.alleen.toLocaleString("nl-NL")}/jr`} kleur={aow.volledig ? "#4caf8a" : kleur} />
-                    </div>
-                    {!aow.volledig && (
-                      <div style={{ marginTop: 8, padding: "8px 12px", background: "#2d1a0e", borderRadius: 8, border: "1px solid #e07b5433" }}>
-                        <span style={{ color: "#e07b54", fontSize: 12 }}>
-                          Korting t.o.v. volledig: <strong>€ {aow.verschilSamen.toLocaleString("nl-NL")}/jr</strong> (€ {Math.round(aow.verschilSamen / 12).toLocaleString("nl-NL")}/mnd) minder AOW — levenslang.
-                        </span>
-                      </div>
-                    )}
                   </div>
                 );
               })()}
+              <StopScenario persoon={persoon} kleur={KLEUREN[pi % KLEUREN.length]}
+                pensioenen={pensioenen.filter(p => p.eigenaarId === persoon.id && !isProduct(p))}
+                partnerNaam={personen.find(p => p.id !== persoon.id)?.naam?.split(" ")[0]}
+                update={(velden) => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, ...velden } : p))} />
               <VerwijderKnop wat={`${persoon.naam} en alle pensioenen van deze persoon`} onVerwijder={() => { setPersonen(personen.filter(p => p.id !== persoon.id)); setPensioenen(pensioenen.filter(p => p.eigenaarId !== persoon.id)); }} />
             </Inklapbaar>
           ))}
@@ -705,7 +751,7 @@ export default function PensioenApp() {
                 titel={<>{pi === 0 ? "👤" : "👥"} {persoon.naam} <span style={{ fontSize: 11, color: "#7a9bb0", fontWeight: 400 }}>· geb. {MAANDEN[(persoon.geboortemaand ?? 1) - 1]} {persoon.geboortejaar}</span></>}
                 samenvatting={`${eigenPens.length} pensioen${eigenPens.length === 1 ? "" : "en"} · ${eigenProd.length} bankspaar/koopsom`}>
                 {eigenPens.length === 0 ? <div style={{ padding: 16, color: "#4a6a7e", fontSize: 13, textAlign: "center" }}>Geen pensioenen</div>
-                  : eigenPens.map(p => <PensioenRij key={p.id} p={p} alle={pensioenen} setPensioenen={setPensioenen} kleur={kleur} />)}
+                  : eigenPens.map(p => <PensioenRij key={p.id} p={p} persoon={persoon} alle={pensioenen} setPensioenen={setPensioenen} kleur={kleur} />)}
                 {/* fix-5: banksparen & koopsommen */}
                 <div style={{ color: "#7a9bb0", fontSize: 12, fontWeight: 600, margin: "18px 0 10px" }}>🏦 Banksparen, beleggingsrechten & koopsommen</div>
                 {eigenProd.map(p => <ProductRij key={p.id} p={p} persoon={persoon} alle={pensioenen} setPensioenen={setPensioenen} kleur={kleur} />)}
@@ -763,18 +809,8 @@ export default function PensioenApp() {
 
           {prognoseView === "tijdlijn" && (
             <div>
-              {personenGesorteerd.length > 1 && (
-                <div style={{ padding: 12, background: "#1a2d3d", borderRadius: 10, border: "1px solid #2a4a5e", marginBottom: 20, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-                  <span style={{ color: "#7a9bb0", fontSize: 12 }}>🎮 Pensioenleeftijd aanpassen:</span>
-                  {personenGesorteerd.slice(1).map((persoon, pi) => (
-                    <div key={persoon.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ color: KLEUREN[(pi+1) % KLEUREN.length], fontSize: 13 }}>{persoon.naam.split(" ")[0]}</span>
-                      <input type="number" step="0.25" value={persoon.pensioenLeeftijd} min="55" max="75" onChange={e => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, pensioenLeeftijd: +e.target.value } : p))} style={{ ...inp, width: 70 }} />
-                      <span style={{ color: "#7a9bb0", fontSize: 11 }}>= {datumBijLeeftijd(persoon, +persoon.pensioenLeeftijd)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+              {/* fix-7: stopleeftijd per persoon met schuifregelaar */}
+              <ScenarioBalk personenGesorteerd={personenGesorteerd} personen={personen} setPersonen={setPersonen} />
               <div style={{ position: "relative", paddingLeft: 24 }}>
                 <div style={{ position: "absolute", left: 8, top: 12, bottom: 12, width: 2, background: "#2a4a5e", borderRadius: 1 }} />
                 {tijdlijnData.map((moment, mi) => (
@@ -786,18 +822,8 @@ export default function PensioenApp() {
 
           {prognoseView === "grafiek" && (
             <>
-              {personenGesorteerd.length > 1 && (
-                <div style={{ padding: 12, background: "#1a2d3d", borderRadius: 10, border: "1px solid #2a4a5e", marginBottom: 16, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-                  <span style={{ color: "#7a9bb0", fontSize: 12 }}>🎮 Pensioenleeftijd:</span>
-                  {personenGesorteerd.slice(1).map((persoon, pi) => (
-                    <div key={persoon.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ color: KLEUREN[(pi+1) % KLEUREN.length], fontSize: 13 }}>{persoon.naam.split(" ")[0]}</span>
-                      <input type="number" step="0.25" value={persoon.pensioenLeeftijd} min="55" max="75" onChange={e => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, pensioenLeeftijd: +e.target.value } : p))} style={{ ...inp, width: 70 }} />
-                      <span style={{ color: "#7a9bb0", fontSize: 11 }}>= {datumBijLeeftijd(persoon, +persoon.pensioenLeeftijd)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+              {/* fix-7: stopleeftijd per persoon met schuifregelaar */}
+              <ScenarioBalk personenGesorteerd={personenGesorteerd} personen={personen} setPersonen={setPersonen} />
               <Inklapbaar titel="📈 Grafiek" samenvatting="bruto, netto en AOW per jaar">
                 <ResponsiveContainer width="100%" height={260}>
                   <LineChart data={chartData}>
@@ -982,13 +1008,161 @@ function RegelItem({ label, sublabel, bedrag, kleur, tag }) {
   );
 }
 
+// ─── fix-7: balk op Prognose om per persoon met de stopleeftijd te spelen ─────
+function ScenarioBalk({ personenGesorteerd, personen, setPersonen }) {
+  if (personenGesorteerd.length === 0) return null;
+  const tekst = { standaard: "pensioen op standaardleeftijd", stoppen: "pensioen direct bij stoppen", eigen: "pensioen op eigen leeftijd" };
+  return (
+    <div style={{ padding: "12px 14px 4px", background: "#1a2d3d", borderRadius: 10, border: "1px solid #2a4a5e", marginBottom: 20 }}>
+      <div style={{ color: "#7a9bb0", fontSize: 12, marginBottom: 8 }}>🎮 Stoppen met werken — schuif en zie direct het effect</div>
+      {personenGesorteerd.map((persoon, pi) => {
+        const kleur = KLEUREN[pi % KLEUREN.length];
+        const aowLft = persoon.aowStartLeeftijd ?? 67.25;
+        return (
+          <LeeftijdSchuif key={persoon.id} persoon={persoon} kleur={kleur} min={55} max={aowLft + MAX_UITSTEL}
+            label={`${persoon.naam.split(" ")[0]} · ${tekst[persoon.ingangModus ?? "standaard"]}${persoon.hoogLaag ? " · hoog-laag" : ""}`}
+            waarde={persoon.pensioenLeeftijd ?? aowLft}
+            onChange={v => setPersonen(personen.map(p => p.id === persoon.id ? { ...p, pensioenLeeftijd: v } : p))} />
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── fix-7: schuifregelaar voor een leeftijd (per maand) ─────────────────────
+function LeeftijdSchuif({ label, persoon, waarde, min, max, onChange, kleur = "#c9a84c" }) {
+  const zet = (v) => onChange(Math.min(max, Math.max(min, Math.round(v * 12) / 12)));
+  const stap = { background: "#111d26", border: `1px solid ${kleur}55`, color: kleur, borderRadius: 6, width: 28, height: 28, cursor: "pointer", fontSize: 15, lineHeight: 1, flexShrink: 0 };
+  return (
+    <div style={{ marginBottom: 10 }}>
+      {label && <label style={lbl}>{label}</label>}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <button onClick={() => zet(waarde - 1 / 12)} style={stap} aria-label="Een maand eerder">−</button>
+        <input type="range" min={min} max={max} step={1 / 12} value={waarde} onChange={e => zet(+e.target.value)}
+          style={{ flex: "1 1 140px", accentColor: kleur, minWidth: 120 }} aria-label={label} />
+        <button onClick={() => zet(waarde + 1 / 12)} style={stap} aria-label="Een maand later">+</button>
+        <span style={{ minWidth: 130, color: kleur, fontSize: 14, fontWeight: 700 }}>
+          {lftLabel(maandenVan(waarde))} <span style={{ color: "#7a9bb0", fontWeight: 400, fontSize: 12 }}>· {datumBijLeeftijd(persoon, waarde)}</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ─── fix-7: scenario stoppen met werken ──────────────────────────────────────
+function StopScenario({ persoon, pensioenen, kleur, partnerNaam, update }) {
+  const aowLft = persoon.aowStartLeeftijd ?? 67.25;
+  const stop   = persoon.pensioenLeeftijd ?? aowLft;
+  const modus  = persoon.ingangModus ?? "standaard";
+  const ref    = doorwerkScenario(persoon);
+  const euro   = (v) => `€ ${Math.round(v).toLocaleString("nl-NL")}`;
+  const metTeken = (v) => `${v < 0 ? "−" : "+"}${euro(Math.abs(v))}`;
+
+  const rijen = pensioenen.map(p => ({ p, nu: pensioenDetail(p, persoon), basis: pensioenDetail(p, ref) }));
+  const levenslang = rijen.filter(r => r.p.totLeeftijd == null);
+  const totRef = levenslang.reduce((s, r) => s + r.basis.bedrag, 0);
+  const totNa  = levenslang.reduce((s, r) => s + r.nu.laag, 0);       // vanaf AOW-leeftijd
+  const totVoor = levenslang.reduce((s, r) => s + r.nu.hoog, 0);      // vóór AOW-leeftijd (bij hoog-laag hoger)
+  const verschil = totNa - totRef;
+  const heeftHoogLaag = persoon.hoogLaag && levenslang.some(r => r.nu.ingang < aowLft - 1e-6);
+  const kanHoogLaag = levenslang.some(r => r.nu.ingang < aowLft - 1e-6);
+
+  const eersteIngang = rijen.length ? Math.min(...rijen.map(r => r.nu.ingang)) : aowLft;
+  const mndZonderAow = Math.max(0, maandenVan(aowLft) - maandenVan(stop));
+  const mndZonderIets = Math.max(0, maandenVan(Math.min(eersteIngang, aowLft)) - maandenVan(stop));
+  const zonderOpbouwData = pensioenen.some(p => p.teBereiken == null);
+  const partnerGat = stop < aowLft && persoon.partnerVerzekerd > (persoon.partnerOpgebouwd ?? 0);
+  const duur = (m) => m >= 12 ? `${Math.floor(m / 12)} jaar${m % 12 ? ` en ${m % 12} mnd` : ""}` : `${m} mnd`;
+
+  const knop = (actief) => ({ background: actief ? `${kleur}33` : "transparent", border: `1px solid ${actief ? kleur : "#2a4a5e"}`, color: actief ? kleur : "#7a9bb0", padding: "6px 12px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontFamily: "inherit" });
+  const melding = (k) => ({ fontSize: 12, padding: "8px 12px", borderRadius: 8, marginTop: 6, background: k === "let" ? "#2d1a0e" : "#111d26", border: `1px solid ${k === "let" ? "#e07b5433" : "#2a4a5e"}`, color: k === "let" ? "#e0a07b" : "#b8c8d4" });
+
+  return (
+    <Inklapbaar sub kleur={kleur} titel="🎮 Scenario: stoppen met werken"
+      samenvatting={`stopt ${lftLabel(maandenVan(stop))} · pensioen ${euro(totNa / 12)}/mnd${Math.round(verschil) !== 0 ? ` (${metTeken(verschil / 12)})` : ""}`}>
+      <LeeftijdSchuif label="Stopt met werken op" persoon={persoon} waarde={stop} min={55} max={aowLft + MAX_UITSTEL} kleur={kleur}
+        onChange={v => update({ pensioenLeeftijd: v })} />
+
+      <label style={lbl}>Pensioen laten ingaan</label>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        <button style={knop(modus === "standaard")} onClick={() => update({ ingangModus: "standaard" })}>Op de standaardleeftijd</button>
+        <button style={knop(modus === "stoppen")}   onClick={() => update({ ingangModus: "stoppen" })}>Direct bij stoppen</button>
+        <button style={knop(modus === "eigen")}     onClick={() => update({ ingangModus: "eigen", ingangLeeftijd: persoon.ingangLeeftijd ?? Math.max(MIN_INGANG, stop) })}>Op een eigen leeftijd</button>
+      </div>
+      {modus === "eigen" && (
+        <LeeftijdSchuif label="Pensioen gaat in op" persoon={persoon} waarde={persoon.ingangLeeftijd ?? Math.max(MIN_INGANG, stop)} min={MIN_INGANG} max={aowLft + MAX_UITSTEL} kleur={kleur}
+          onChange={v => update({ ingangLeeftijd: v })} />
+      )}
+      <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, color: kanHoogLaag ? "#b8c8d4" : "#4a6a7e", marginBottom: 12, cursor: kanHoogLaag ? "pointer" : "default" }}>
+        <input type="checkbox" checked={!!persoon.hoogLaag} disabled={!kanHoogLaag} onChange={e => update({ hoogLaag: e.target.checked })} style={{ accentColor: kleur }} />
+        Hoog-laag: tot de AOW-leeftijd een hoger pensioen, daarna 75% daarvan
+        {!kanHoogLaag && <span style={{ color: "#4a6a7e" }}>(alleen bij ingang vóór de AOW-leeftijd)</span>}
+      </label>
+
+      {rijen.length > 0 && (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead><tr>
+              <th style={{ ...thK, textAlign: "left" }}>Regeling</th>
+              <th style={thK}>Ingang</th>
+              <th style={thK}>Doorwerken<br />€/jr</th>
+              <th style={thK}>Scenario<br />€/jr</th>
+            </tr></thead>
+            <tbody>
+              {rijen.map(({ p, nu, basis }) => (
+                <tr key={p.id} style={{ borderBottom: "1px solid #2a4a5e33" }}>
+                  <td style={{ ...celK, textAlign: "left", color: "#e8dcc8" }}>{p.naam}{p.totLeeftijd != null && <span style={{ color: "#4a6a7e" }}> (tijdelijk)</span>}</td>
+                  <td style={celK}>{lftLabel(maandenVan(nu.ingang))}{nu.factor !== 1 && <div style={{ fontSize: 10, color: nu.factor < 1 ? "#e07b54" : "#4caf8a" }}>{nu.factor < 1 ? "−" : "+"}{Math.abs(Math.round((nu.factor - 1) * 100))}% {nu.factor < 1 ? "vervroeging" : "uitstel"}</div>}</td>
+                  <td style={celK}>{euro(basis.bedrag).slice(2)}</td>
+                  <td style={{ ...celK, color: kleur }}>{nu.hoog !== nu.laag ? <>{euro(nu.hoog).slice(2)}<br />→ {euro(nu.laag).slice(2)}</> : euro(nu.bedrag).slice(2)}</td>
+                </tr>
+              ))}
+              {levenslang.length > 0 && (
+                <tr>
+                  <td style={{ ...celK, textAlign: "left", color: "#c9a84c", fontWeight: 700 }}>Totaal vanaf AOW</td>
+                  <td style={celK}></td>
+                  <td style={{ ...celK, fontWeight: 700 }}>{euro(totRef).slice(2)}</td>
+                  <td style={{ ...celK, fontWeight: 700, color: kleur }}>{euro(totNa).slice(2)}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {levenslang.length > 0 && Math.round(verschil) !== 0 && (
+        <div style={{ ...melding(verschil < 0 ? "let" : "info"), fontSize: 13 }}>
+          Levenslang <strong>{metTeken(verschil)}/jr bruto</strong> ({metTeken(verschil / 12)}/mnd{totRef > 0 ? `, ${verschil < 0 ? "−" : "+"}${Math.abs(Math.round(verschil / totRef * 100))}%` : ""}) t.o.v. doorwerken tot de AOW-leeftijd.
+          {heeftHoogLaag && <> Tot de AOW-leeftijd {euro(totVoor)}/jr.</>}
+        </div>
+      )}
+
+      {mndZonderAow > 0 && <div style={melding("info")}>Van {datumBijLeeftijd(persoon, stop)} tot {datumBijLeeftijd(persoon, aowLft)}: <strong>{duur(mndZonderAow)}</strong> nog geen AOW. Onder de AOW-leeftijd betaal je ook meer belasting; de Prognose rekent daarmee.</div>}
+      {mndZonderIets > 0 && <div style={melding("let")}>⚠ <strong>{duur(mndZonderIets)}</strong> zonder pensioen én AOW (tot {datumBijLeeftijd(persoon, Math.min(eersteIngang, aowLft))}) — dat moet uit spaargeld of ander inkomen komen.</div>}
+      {modus === "stoppen" && stop < MIN_INGANG && <div style={melding("info")}>Pensioen kan op z'n vroegst ingaan op {MIN_INGANG} jaar.</div>}
+      {partnerGat && (
+        <div style={melding("let")}>
+          ⚠ <strong>Partnerpensioen{partnerNaam ? ` voor ${partnerNaam}` : ""}</strong>: nu verzekerd {euro(persoon.partnerVerzekerd)}/jr, waarvan {euro(persoon.partnerOpgebouwd ?? 0)}/jr opgebouwd.
+          De rest is een risicodekking die na stoppen nog ca. 3 maanden doorloopt. Overlijden daarna (vóór pensioeningang) levert dan ongeveer {euro(persoon.partnerOpgebouwd ?? 0)}/jr op.
+          Vraag je fonds naar het (deels) voortzetten of uitruilen.
+        </div>
+      )}
+      {zonderOpbouwData && <div style={melding("info")}>Importeer het XML-overzicht opnieuw: dan rekent de app ook de opbouw tot je stopleeftijd mee (Opgebouwd → Te bereiken).</div>}
+      <div style={{ fontSize: 11, color: "#4a6a7e", marginTop: 8 }}>
+        Eerder/later laten ingaan is een schatting (sterftetafel + rekenrente). De exacte factoren van je fonds zie je in MijnABP of bij je uitvoerder.
+      </div>
+    </Inklapbaar>
+  );
+}
+
 // ─── PensioenRij ──────────────────────────────────────────────────────────────
-function PensioenRij({ p, alle, setPensioenen, kleur }) {
+function PensioenRij({ p, persoon, alle, setPensioenen, kleur }) {
   const update = (veld, waarde) => setPensioenen(alle.map(x => x.id === p.id ? { ...x, [veld]: waarde } : x));
+  const d = persoon ? pensioenDetail(p, persoon) : { ingang: p.startLeeftijd, bedrag: p.bruto_jaar ?? 0 };   // fix-7
+  const heeftOpbouw = p.teBereiken != null;
   return (
     <Inklapbaar sub kleur={kleur} standaardOpen={!(p.bruto_jaar > 0)}
       titel={<>{p.type === "lijfrente" ? "📋" : "🏛️"} {p.naam}</>}
-      samenvatting={`€ ${Math.round((p.bruto_jaar ?? 0) / 12).toLocaleString("nl-NL")}/mnd bruto · vanaf ${p.startLeeftijd} jr${p.totLeeftijd ? ` tot ${p.totLeeftijd}` : ""}`}>
+      samenvatting={`€ ${Math.round(d.bedrag / 12).toLocaleString("nl-NL")}/mnd bruto · vanaf ${lftLabel(maandenVan(d.ingang))}${p.totLeeftijd ? ` tot ${p.totLeeftijd}` : ""}`}>
       <div style={{ marginBottom: 8 }}>
         <label style={lbl}>Naam</label>
         <input value={p.naam} onChange={e => update("naam", e.target.value)} style={{ ...inp, maxWidth: 360 }} />
@@ -1005,8 +1179,19 @@ function PensioenRij({ p, alle, setPensioenen, kleur }) {
         </div>
         <Field label="Startleeftijd" value={p.startLeeftijd} onChange={v => update("startLeeftijd", +v)} type="number" />
         <Field label="Stopt leeftijd (leeg=levenslang)" value={p.totLeeftijd ?? ""} onChange={v => update("totLeeftijd", v === "" ? null : +v)} type="number" />
-        <Field label="Bruto/jr (€)" value={p.bruto_jaar??0} onChange={v => update("bruto_jaar", +v)} type="number" />
+        {heeftOpbouw ? <>
+          {/* fix-7: opgebouwd nu vs. te bereiken bij doorwerken; bruto_jaar blijft gelijk aan opgebouwd */}
+          <Field label="Opgebouwd/jr (€)" value={p.opgebouwd ?? 0} onChange={v => setPensioenen(alle.map(x => x.id === p.id ? { ...x, opgebouwd: +v, bruto_jaar: +v } : x))} type="number" />
+          <Field label="Te bereiken/jr bij doorwerken (€)" value={p.teBereiken ?? 0} onChange={v => update("teBereiken", +v)} type="number" />
+        </> : <Field label="Bruto/jr (€)" value={p.bruto_jaar??0} onChange={v => update("bruto_jaar", +v)} type="number" />}
       </Grid>
+      {persoon && heeftOpbouw && (
+        <div style={{ fontSize: 12, color: "#b8c8d4", background: "#1a2d3d", borderRadius: 8, padding: "8px 12px" }}>
+          Bij stoppen op {lftLabel(maandenVan(persoon.pensioenLeeftijd ?? p.startLeeftijd))}: <strong style={{ color: kleur }}>€ {Math.round(d.basis).toLocaleString("nl-NL")}/jr</strong> op {lftLabel(maandenVan(p.startLeeftijd))}
+          {d.ingang !== p.startLeeftijd && <> → ingang {lftLabel(maandenVan(d.ingang))}: <strong style={{ color: "#c9a84c" }}>€ {Math.round(d.bedrag).toLocaleString("nl-NL")}/jr</strong></>}
+          <span style={{ color: "#4a6a7e" }}> · instellen via Mijn situatie → Scenario</span>
+        </div>
+      )}
       <VerwijderKnop wat={p.naam} onVerwijder={() => setPensioenen(alle.filter(x => x.id !== p.id))} />
     </Inklapbaar>
   );
@@ -1115,5 +1300,7 @@ function KPI({ label, value, kleur }) {
 const inp = { width: "100%", padding: "7px 10px", background: "#111d26", border: "1px solid #2a4a5e", borderRadius: 7, color: "#e8dcc8", fontSize: 13, boxSizing: "border-box" };
 const lbl = { display: "block", fontSize: 11, color: "#7a9bb0", marginBottom: 4 };
 const cel = { padding: "7px 10px", textAlign: "right", color: "#a0b8c8" };
+const celK = { padding: "6px 5px", textAlign: "right", color: "#a0b8c8", verticalAlign: "top" };   // fix-7: compact (mobiel)
+const thK  = { padding: "6px 5px", textAlign: "right", color: "#c9a84c", borderBottom: "1px solid #2a4a5e", fontSize: 11, verticalAlign: "bottom" };
 const th  = { padding: "8px 10px", textAlign: "right", color: "#c9a84c", borderBottom: "1px solid #2a4a5e", whiteSpace: "nowrap" };
 const btn = (color) => ({ background: `${color}22`, border: `1px solid ${color}44`, color, padding: "6px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 });

@@ -2,6 +2,7 @@
 // fix-4: nieuwe pagina's Help, Privacy en Disclaimer
 // fix-5: help uitgebreid met banksparen en koopsommen
 // fix-6: verwijderen via 🗑-knop met bevestiging; blokken inklapbaar
+// fix-7: uitleg scenario stoppen met werken; AOW-tekst gecorrigeerd (opbouw door wonen, niet werken)
 
 const BIJGEWERKT = "september 2026";
 const REPO_URL = "https://github.com/bruindav/pensioenberekenen";
@@ -59,7 +60,8 @@ export function HelpPagina({ naar }) {
       <ul style={s.ul}>
         <li><strong>Geboortejaar en -maand</strong> — de app rekent per maand, dus de maand bepaalt wanneer een uitkering start.</li>
         <li><strong>Leefsituatie</strong> — gehuwd/samenwonend of alleenstaand. Dit bepaalt de hoogte van je AOW en of je de alleenstaande-ouderenkorting krijgt.</li>
-        <li><strong>Pensioenleeftijd</strong> — wanneer je stopt met werken. Stop je vóór je AOW-leeftijd, dan toont de app hoeveel AOW-opbouw je misloopt.</li>
+        <li><strong>🎮 Scenario: stoppen met werken</strong> — schuif de leeftijd waarop je stopt (per maand). Je pensioenopbouw loopt door tot die leeftijd. Kies of je pensioen op de standaardleeftijd ingaat, direct bij stoppen of op een eigen leeftijd (vanaf 60), en of je hoog-laag wilt (tot je AOW hoger, daarna 75%). Je ziet per regeling het verschil met doorwerken tot je AOW-leeftijd, hoe lang je zonder AOW of zonder enig inkomen zit, en of het partnerpensioen daalt. Ook op het tabblad Prognose staat een schuifregelaar per persoon.</li>
+        <li><strong>AOW</strong> — die bouw je op door in Nederland te wonen, niet door te werken. Eerder stoppen met werken verandert je AOW dus niet; je krijgt hem wel pas vanaf je AOW-leeftijd.</li>
         <li><strong>AOW vanaf leeftijd</strong> — wordt uit het overzicht gehaald (bijv. 67,25 = 67 jaar en 3 maanden).</li>
       </ul>
       <p>
@@ -225,7 +227,8 @@ export function DisclaimerPagina() {
         <li>Fiscale partnerregelingen, aftrekposten, en overdracht van heffingskorting tussen partners.</li>
         <li>Het verschil tussen maandelijkse inhouding (loonheffing) en de definitieve aanslag inkomstenbelasting.</li>
         <li>Nabestaandenpensioen, de invloed van de Wet toekomst pensioenen en wijzigingen in je opbouw ná de datum van je overzicht.</li>
-        <li>De AOW-berekening bij eerder stoppen is een benadering (opbouw per jaar tot je pensioenleeftijd).</li>
+        <li>Bij eerder of later laten ingaan rekent de app met een geschatte factor (sterftetafel en rekenrente). Je pensioenfonds gebruikt eigen factoren die elk jaar wijzigen; de opbouw tot je stopleeftijd wordt lineair geschat tussen "opgebouwd" en "te bereiken".</li>
+        <li>De verwachte AOW gaat ervan uit dat je tot je AOW-leeftijd in Nederland blijft wonen.</li>
         <li>Rendementen van banksparen en beleggingsrechten zijn aannames; beleggingen kunnen ook minder opleveren. Koopsom-uitkeringen zonder offerte zijn schattingen.</li>
       </ul>
 
