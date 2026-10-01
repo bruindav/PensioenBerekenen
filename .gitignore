@@ -1,0 +1,4 @@
+# fix-7: build-output en lokale afhankelijkheden niet meecommitten
+node_modules/
+dist/
+package-lock.json
