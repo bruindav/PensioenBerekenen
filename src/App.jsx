@@ -1,4 +1,6 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-19: banksparen/koopsom: uitkering kan ingaan "zodra [persoon] stopt met werken" (volgt de stopleeftijd in
+//         Prognose en Simulatie); rente met decimalen (2,2%) invoerbaar (step="any")
 // fix-18: spaargeld en woning: eigen aantal jaren instelbaar (bijv. € 10.000/jr, 10 jaar, vanaf 68)
 // fix-17: scherm vult de hele breedte (geen witte rand), minder marge op smalle schermen
 // fix-16: Prognose: spaargeld en woning apart aan/uit te zetten; opname stopt als het totaal op is
@@ -55,7 +57,7 @@ import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { maakDemoData } from "./DemoData.js";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-18";
+const FIX_NR = "fix-19";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -152,8 +154,8 @@ function annuiteit(kapitaal, rentePct, jaren) {
 }
 
 // Verwacht kapitaal op de startdatum van de uitkering
-function kapitaalBijStart(p, persoon) {
-  const startAbs = gebAbs(persoon) + maandenVan(p.startLeeftijd ?? 67);
+function kapitaalBijStart(p, persoon, start) {
+  const startAbs = gebAbs(persoon) + maandenVan(start ?? p.startLeeftijd ?? 67);
   const r = (p.rendement ?? 0) / 100;
   const inleg = p.inlegPerJaar ?? 0;
   // Vertrekpunt: verwachte waarde van de aanbieder (als ingevuld), anders huidig saldo
@@ -167,19 +169,34 @@ function kapitaalBijStart(p, persoon) {
 }
 
 // Geeft { bedragJr, kapitaal, totLeeftijd, geschat } voor een product
-function productUitkering(p, persoon) {
+// fix-19: ingang van een product kan aan het stoppen met werken van een persoon hangen (p.startBij = persoonId),
+// zodat de uitkering meebeweegt met de stopleeftijd in Prognose en Simulatie. Geeft de leeftijd van de eigenaar.
+function productStart(p, persoon, pers) {
+  if (p.startBij) {
+    const bron = p.startBij === persoon.id ? persoon : pers?.find(x => x.id === p.startBij);
+    if (bron) {
+      const stopAbs = gebAbs(bron) + maandenVan(bron.pensioenLeeftijd ?? bron.aowStartLeeftijd ?? 67.25);
+      return (stopAbs - gebAbs(persoon)) / 12;
+    }
+  }
+  return p.startLeeftijd ?? 67;
+}
+
+// Geeft { bedragJr, kapitaal, totLeeftijd, geschat, start } voor een product
+function productUitkering(p, persoon, pers) {
+  const start = productStart(p, persoon, pers);
   if (p.type === "bankspaar") {
     const looptijd = p.looptijd ?? 20;
-    const kapitaal = kapitaalBijStart(p, persoon);
-    return { bedragJr: annuiteit(kapitaal, p.rente ?? 2, looptijd), kapitaal, totLeeftijd: (p.startLeeftijd ?? 67) + looptijd, geschat: true };
+    const kapitaal = kapitaalBijStart(p, persoon, start);
+    return { bedragJr: annuiteit(kapitaal, p.rente ?? 2, looptijd), kapitaal, totLeeftijd: start + looptijd, geschat: true, start };
   }
   if (p.type === "koopsom") {
     const looptijd = p.looptijd > 0 ? p.looptijd : null;             // leeg/0 = levenslang
-    if (p.uitkeringMnd > 0) return { bedragJr: p.uitkeringMnd * 12, kapitaal: p.koopsom ?? 0, totLeeftijd: looptijd ? p.startLeeftijd + looptijd : null, geschat: false };
-    const jaren = looptijd ?? Math.max(5, 90 - (p.startLeeftijd ?? 67)); // levenslang: schatting tot 90
-    return { bedragJr: annuiteit(p.koopsom ?? 0, p.rente ?? 2, jaren), kapitaal: p.koopsom ?? 0, totLeeftijd: looptijd ? p.startLeeftijd + looptijd : null, geschat: true };
+    if (p.uitkeringMnd > 0) return { bedragJr: p.uitkeringMnd * 12, kapitaal: p.koopsom ?? 0, totLeeftijd: looptijd ? start + looptijd : null, geschat: false, start };
+    const jaren = looptijd ?? Math.max(5, 90 - start); // levenslang: schatting tot 90
+    return { bedragJr: annuiteit(p.koopsom ?? 0, p.rente ?? 2, jaren), kapitaal: p.koopsom ?? 0, totLeeftijd: looptijd ? start + looptijd : null, geschat: true, start };
   }
-  return { bedragJr: p.bruto_jaar ?? 0, kapitaal: 0, totLeeftijd: p.totLeeftijd, geschat: false };
+  return { bedragJr: p.bruto_jaar ?? 0, kapitaal: 0, totLeeftijd: p.totLeeftijd, geschat: false, start: p.startLeeftijd };
 }
 
 // Verwachte AOW op de AOW-leeftijd (fix-7)
@@ -557,8 +574,8 @@ export default function PensioenApp() {
       pensioenen.filter(p => p.eigenaarId === persoon.id).forEach((p) => {
         let gestart, gestopt, bedrag;
         if (isProduct(p)) {
-          const pu = productUitkering(p, persoon);                        // fix-5
-          gestart = lftM >= maandenVan(p.startLeeftijd);
+          const pu = productUitkering(p, persoon, pers);                  // fix-5/19
+          gestart = lftM >= maandenVan(pu.start);
           gestopt = pu.totLeeftijd != null && lftM >= maandenVan(pu.totLeeftijd);
           bedrag = pu.bedragJr;
         } else {
@@ -623,7 +640,7 @@ export default function PensioenApp() {
     const starts = [];
     personen.forEach(persoon => {
       pensioenen.filter(p => p.eigenaarId === persoon.id).forEach(p =>
-        starts.push(gebAbs(persoon) + maandenVan(isProduct(p) ? p.startLeeftijd : ingangLeeftijd(p, persoon))));
+        starts.push(gebAbs(persoon) + maandenVan(isProduct(p) ? productStart(p, persoon, personen) : ingangLeeftijd(p, persoon))));
     });
     const oudste = personenGesorteerd[0];
     return starts.length > 0 ? Math.min(...starts) : gebAbs(oudste) + maandenVan(oudste.pensioenLeeftijd);
@@ -641,7 +658,7 @@ export default function PensioenApp() {
     pers.forEach(p => {
       eindAbs = Math.max(eindAbs, gebAbs(p) + maandenVan(p.aowStartLeeftijd ?? 67.25));
       pensioenen.filter(x => x.eigenaarId === p.id).forEach(x =>
-        eindAbs = Math.max(eindAbs, gebAbs(p) + maandenVan(isProduct(x) ? x.startLeeftijd : ingangLeeftijd(x, p))));
+        eindAbs = Math.max(eindAbs, gebAbs(p) + maandenVan(isProduct(x) ? productStart(x, p, pers) : ingangLeeftijd(x, p))));
     });
     eindAbs = Math.min(eindAbs, beginAbs + 20 * 12);
     const netto = (abs) => berekenMaand(abs, pers).totNettoMndZonderVermogen;
@@ -659,7 +676,7 @@ export default function PensioenApp() {
     const info = pers.map((p, i) => {
       const aowAbs = gebAbs(p) + maandenVan(p.aowStartLeeftijd ?? 67.25);
       const eigen = pensioenen.filter(x => x.eigenaarId === p.id);
-      const ingangen = eigen.map(x => gebAbs(p) + maandenVan(isProduct(x) ? x.startLeeftijd : ingangLeeftijd(x, p)));
+      const ingangen = eigen.map(x => gebAbs(p) + maandenVan(isProduct(x) ? productStart(x, p, pers) : ingangLeeftijd(x, p)));
       const pensIngang = eigen.filter(x => !isProduct(x) && x.totLeeftijd == null).map(x => ingangLeeftijd(x, p));
       return { id: p.id, naam: p.naam.split(" ")[0], stopAbs: stopAbs[i], stopLft: p.pensioenLeeftijd ?? p.aowStartLeeftijd ?? 67.25,
         aowAbs, eersteInkomen: Math.min(aowAbs, ...ingangen), modus: p.ingangModus ?? "standaard",
@@ -924,7 +941,7 @@ export default function PensioenApp() {
                   : eigenPens.map(p => <PensioenRij key={p.id} p={p} persoon={persoon} alle={pensioenen} setPensioenen={setPensioenen} kleur={kleur} />)}
                 {/* fix-5: banksparen & koopsommen */}
                 <div style={{ color: "#7a9bb0", fontSize: 12, fontWeight: 600, margin: "18px 0 10px" }}>🏦 Banksparen, beleggingsrechten & koopsommen</div>
-                {eigenProd.map(p => <ProductRij key={p.id} p={p} persoon={persoon} alle={pensioenen} setPensioenen={setPensioenen} kleur={kleur} />)}
+                {eigenProd.map(p => <ProductRij key={p.id} p={p} persoon={persoon} personen={personenGesorteerd} alle={pensioenen} setPensioenen={setPensioenen} kleur={kleur} />)}
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
                   <button onClick={() => setPensioenen([...pensioenen, { id: `handmatig_${Date.now()}`, naam: "Nieuw pensioen", type: "pensioen", eigenaarId: persoon.id, bruto_jaar: 0, startLeeftijd: persoon.aowStartLeeftijd ?? 67.25, totLeeftijd: null }])} style={knop}>+ Pensioen</button>
                   <button onClick={() => nieuw("bankspaar")} style={knop}>+ Banksparen / beleggen</button>
@@ -1586,16 +1603,17 @@ function PensioenRij({ p, persoon, alle, setPensioenen, kleur }) {
 }
 
 // ─── fix-5: invoer banksparen / koopsom ───────────────────────────────────────
-function ProductRij({ p, persoon, alle, setPensioenen, kleur }) {
+function ProductRij({ p, persoon, personen, alle, setPensioenen, kleur }) {
   const update = (veld, waarde) => setPensioenen(alle.map(x => x.id === p.id ? { ...x, [veld]: waarde } : x));
   const num = (v) => (v === "" ? 0 : +v);
-  const pu = productUitkering(p, persoon);
+  const pu = productUitkering(p, persoon, personen);
+  const start = pu.start;
   const isBank = p.type === "bankspaar";
   const eind = pu.totLeeftijd != null ? `tot ${datumBijLeeftijd(persoon, pu.totLeeftijd)}` : "levenslang";
   return (
     <Inklapbaar sub kleur={kleur} standaardOpen={!(pu.bedragJr > 0)}
       titel={<>{isBank ? "🏦" : "💶"} {p.naam}</>}
-      samenvatting={`€ ${Math.round(pu.bedragJr / 12).toLocaleString("nl-NL")}/mnd bruto vanaf ${datumBijLeeftijd(persoon, p.startLeeftijd)}`}>
+      samenvatting={`€ ${Math.round(pu.bedragJr / 12).toLocaleString("nl-NL")}/mnd bruto vanaf ${datumBijLeeftijd(persoon, start)}`}>
       <div style={{ marginBottom: 8 }}>
         <label style={lbl}>Naam</label>
         <input value={p.naam} onChange={e => update("naam", e.target.value)} style={{ ...inp, maxWidth: 360 }} />
@@ -1617,13 +1635,21 @@ function ProductRij({ p, persoon, alle, setPensioenen, kleur }) {
           <Field label="Koopsom (€)" value={p.koopsom ?? 0} onChange={v => update("koopsom", num(v))} type="number" />
           <Field label="Uitkering uit offerte (€/mnd bruto)" value={p.uitkeringMnd ?? 0} onChange={v => update("uitkeringMnd", num(v))} type="number" />
         </>}
-        <Field label="Uitkering vanaf leeftijd" value={p.startLeeftijd} onChange={v => update("startLeeftijd", num(v))} type="number" />
+        <div><label style={lbl}>Uitkering gaat in</label>
+          <select value={p.startBij ?? ""} onChange={e => update("startBij", e.target.value || null)} style={inp}>
+            <option value="">Op een vaste leeftijd</option>
+            {personen.map(x => <option key={x.id} value={x.id}>Zodra {x.naam.split(" ")[0]} stopt met werken</option>)}
+          </select>
+        </div>
+        {p.startBij
+          ? <div><label style={lbl}>Uitkering vanaf leeftijd</label><div style={{ ...inp, color: "#7a9bb0" }}>{lftLabel(maandenVan(start))} (volgt de stopleeftijd)</div></div>
+          : <Field label="Uitkering vanaf leeftijd" value={p.startLeeftijd} onChange={v => update("startLeeftijd", num(v))} type="number" />}
         <Field label={isBank ? "Looptijd uitkering (jaren)" : "Looptijd (jaren, 0 = levenslang)"} value={p.looptijd ?? (isBank ? 20 : 0)} onChange={v => update("looptijd", num(v))} type="number" />
         {(isBank || !(p.uitkeringMnd > 0)) && <Field label="Rente tijdens uitkering (%)" value={p.rente ?? 2} onChange={v => update("rente", num(v))} type="number" />}
       </Grid>
       <div style={{ fontSize: 12, color: "#b8c8d4", background: "#1a2d3d", borderRadius: 8, padding: "8px 12px" }}>
-        {isBank && <>Verwacht kapitaal op {datumBijLeeftijd(persoon, p.startLeeftijd)}: <strong style={{ color: kleur }}>€ {pu.kapitaal.toLocaleString("nl-NL")}</strong> → </>}
-        uitkering <strong style={{ color: "#c9a84c" }}>€ {Math.round(pu.bedragJr / 12).toLocaleString("nl-NL")}/mnd bruto</strong> vanaf {datumBijLeeftijd(persoon, p.startLeeftijd)}, {eind}
+        {isBank && <>Verwacht kapitaal op {datumBijLeeftijd(persoon, start)}: <strong style={{ color: kleur }}>€ {pu.kapitaal.toLocaleString("nl-NL")}</strong> → </>}
+        uitkering <strong style={{ color: "#c9a84c" }}>€ {Math.round(pu.bedragJr / 12).toLocaleString("nl-NL")}/mnd bruto</strong> vanaf {datumBijLeeftijd(persoon, start)}, {eind}
         {pu.geschat && <span style={{ color: "#4a6a7e" }}> · schatting{!isBank && pu.totLeeftijd == null ? " (levenslang gerekend tot 90 jaar)" : ""}</span>}
         <div style={{ color: "#4a6a7e", fontSize: 11, marginTop: 2 }}>Telt als bruto inkomen (box 1): belasting en Zvw worden ingehouden.</div>
       </div>
@@ -1675,7 +1701,7 @@ function VerwijderKnop({ wat, onVerwijder, compact = false }) {
 
 function Section({ title, children }) { return <div><h2 style={{ color: "#c9a84c", fontSize: 18, marginBottom: 20, paddingBottom: 10, borderBottom: "1px solid #2a4a5e" }}>{title}</h2>{children}</div>; }
 function Grid({ children }) { return <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(185px,1fr))", gap: 12, marginBottom: 12 }}>{children}</div>; }
-function Field({ label, value, onChange, type = "text" }) { return <div><label style={lbl}>{label}</label><input type={type} value={value} onChange={e => onChange(e.target.value)} style={inp} /></div>; }
+function Field({ label, value, onChange, type = "text" }) { return <div><label style={lbl}>{label}</label><input type={type} step={type === "number" ? "any" : undefined} value={value} onChange={e => onChange(e.target.value)} style={inp} /></div>; }
 function KPI({ label, value, kleur }) {
   return (
     <div style={{ background: "#0f1923", borderRadius: 8, padding: "10px 14px", border: `1px solid ${kleur}44` }}>
