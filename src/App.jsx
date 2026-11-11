@@ -1,4 +1,5 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-12: header rustiger: alleen "Importeren" zichtbaar, Demo/Backup/Herstel/Help in een ⋯-menu
 // fix-11: demo-modus met realistische (fictieve) voorbeeldgegevens (src/DemoData.js).
 //         Keuzescherm bij opstarten (demo of eigen gegevens); in demo wordt niets opgeslagen
 //         en blijven je eigen gegevens in IndexedDB ongemoeid. Versienummer ook op het startscherm.
@@ -48,7 +49,7 @@ import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { maakDemoData } from "./DemoData.js";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-11";
+const FIX_NR = "fix-12";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -384,6 +385,7 @@ export default function PensioenApp() {
   const [prognoseView, setPrognoseView] = useState("tijdlijn");
   // fix-11: null = nog kiezen (startscherm) · "eigen" = eigen gegevens (opgeslagen) · "demo" = voorbeeld (niet opgeslagen)
   const [modus, setModus] = useState(null);
+  const [menuOpen, setMenuOpen] = useState(false);                      // fix-12: ⋯-menu in de header
 
   // Info-pagina's (fix-4): gekoppeld aan #help / #privacy / #disclaimer
   const INFO = ["help", "privacy", "disclaimer"];
@@ -748,18 +750,28 @@ export default function PensioenApp() {
           <button onClick={stopDemo} style={btn("#c9a84c")}>Demo afsluiten</button>
         </div>
       )}
-      <div style={{ background: "linear-gradient(135deg,#1a2d3d,#0f1923)", borderBottom: "1px solid #2a4a5e", padding: "16px 24px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+      <div style={{ background: "linear-gradient(135deg,#1a2d3d,#0f1923)", borderBottom: "1px solid #2a4a5e", padding: "12px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: "#c9a84c" }}>🏦 Pensioen Planner <span style={{ fontSize: 11, color: "#555", fontWeight: 400 }}>{FIX_NR}</span></h1>
           <p style={{ margin: "2px 0 0", color: "#7a9bb0", fontSize: 11 }}>Data blijft alleen op jouw apparaat</p>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          {opgeslagen && <span style={{ fontSize: 11, color: "#4caf8a" }}>✓ {opgeslagen.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}</span>}
-          <label style={{ ...btn("#5b9bd5"), cursor: "pointer" }}>📥 Pensioen importeren<input type="file" accept=".json,.xml" onChange={importeerBestand} style={{ display: "none" }} /></label>
-          {modus === "eigen" && <button onClick={startDemo} style={btn("#a084c9")}>🎭 Demo</button>}
-          <button onClick={exporteer} style={btn("#c9a84c")}>⬇ Backup</button>
-          <button onClick={() => naarInfo("help")} style={btn("#4caf8a")}>❓ Help</button>
-          <label style={{ ...btn("#7a9bb0"), cursor: "pointer" }}>⬆ Herstel<input type="file" accept=".json" onChange={importeerBackup} style={{ display: "none" }} /></label>
+        {/* fix-12: rustiger — alleen Importeren zichtbaar, de rest in een ⋯-menu (inputs blijven gemount i.v.m. bestandskeuze) */}
+        <div style={{ display: "flex", gap: 10, alignItems: "center", position: "relative" }}>
+          {opgeslagen && <span title="Opgeslagen op dit apparaat" style={{ fontSize: 11, color: "#4caf8a" }}>✓ {opgeslagen.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}</span>}
+          <label style={{ ...btn("#5b9bd5"), cursor: "pointer" }}>📥 Importeren<input type="file" accept=".json,.xml" onChange={importeerBestand} style={{ display: "none" }} /></label>
+          <button onClick={() => setMenuOpen(o => !o)} aria-label="Meer opties" style={{ ...btn("#7a9bb0"), padding: "6px 11px", fontSize: 16, lineHeight: 1 }}>⋯</button>
+          {menuOpen && <div onClick={() => setMenuOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 20 }} />}
+          <div style={{ display: menuOpen ? "block" : "none", position: "absolute", right: 0, top: "calc(100% + 8px)", zIndex: 21, minWidth: 190, background: "#1a2d3d", border: "1px solid #2a4a5e", borderRadius: 10, padding: 6, boxShadow: "0 8px 24px #0008" }}>
+            {(() => {
+              const item = { display: "block", width: "100%", boxSizing: "border-box", textAlign: "left", background: "transparent", border: "none", color: "#e8dcc8", padding: "10px 12px", borderRadius: 6, cursor: "pointer", fontSize: 13, fontFamily: "inherit" };
+              return <>
+                {modus === "eigen" && <button style={item} onClick={() => { setMenuOpen(false); startDemo(); }}>🎭 Demo bekijken</button>}
+                <button style={item} onClick={() => { setMenuOpen(false); exporteer(); }}>⬇ Backup maken</button>
+                <label style={item} onClick={() => setMenuOpen(false)}>⬆ Backup herstellen<input type="file" accept=".json" onChange={(e) => { setMenuOpen(false); importeerBackup(e); }} style={{ display: "none" }} /></label>
+                <button style={item} onClick={() => { setMenuOpen(false); naarInfo("help"); }}>❓ Help</button>
+              </>;
+            })()}
+          </div>
         </div>
       </div>
 
