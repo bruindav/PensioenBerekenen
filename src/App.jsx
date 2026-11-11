@@ -1,4 +1,5 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-17: scherm vult de hele breedte (geen witte rand), minder marge op smalle schermen
 // fix-16: Prognose: spaargeld en woning apart aan/uit te zetten; opname stopt als het totaal op is
 // fix-15: installeerbaar als app (manifest in public/, meta in index.html) zodat de adresbalk verdwijnt
 // fix-14: duidelijkere namen bij "pensioen laten ingaan" (standaardleeftijd uit polis / bij stoppen met werken / zelf op te geven leeftijd)
@@ -53,7 +54,7 @@ import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { maakDemoData } from "./DemoData.js";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-16";
+const FIX_NR = "fix-17";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -800,7 +801,7 @@ export default function PensioenApp() {
         ))}
       </div>
 
-      <div style={{ maxWidth: 980, margin: "0 auto", padding: "28px 20px" }}>
+      <div style={{ maxWidth: 980, margin: "0 auto", padding: "clamp(14px, 4vw, 28px) clamp(12px, 4vw, 20px)" }}>
 
         {/* INFO-PAGINA'S (fix-4) */}
         {infoPagina && (

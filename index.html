@@ -1,16 +1,23 @@
 <!doctype html>
+<!-- fix-17: geen witte rand meer, schermvullend op elke schermgrootte -->
 <!-- fix-15: manifest + meta voor installeren als app (zonder adresbalk) -->
 <html lang="nl">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/PensioenBerekenen/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link rel="manifest" href="/PensioenBerekenen/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/PensioenBerekenen/icon-192.png" />
     <meta name="theme-color" content="#0f1923" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <style>
+      html, body, #root { margin: 0; padding: 0; min-height: 100%; background: #0f1923; }
+      body { min-height: 100vh; overflow-x: hidden; -webkit-text-size-adjust: 100%; }
+      #root > div { min-height: 100vh; }
+      @media (max-width: 600px) { #root h2 { font-size: 17px; } }
+    </style>
     <title>Pensioen Planner</title>
   </head>
   <body>
