@@ -1,4 +1,5 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-16: Prognose: spaargeld en woning apart aan/uit te zetten; opname stopt als het totaal op is
 // fix-15: installeerbaar als app (manifest in public/, meta in index.html) zodat de adresbalk verdwijnt
 // fix-14: duidelijkere namen bij "pensioen laten ingaan" (standaardleeftijd uit polis / bij stoppen met werken / zelf op te geven leeftijd)
 // fix-13: alle blokken standaard dichtgeklapt (overzicht); klik om open te klappen
@@ -52,7 +53,7 @@ import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { maakDemoData } from "./DemoData.js";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-15";
+const FIX_NR = "fix-16";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -585,8 +586,16 @@ export default function PensioenApp() {
 
     // Vermogen: netto — geen belasting
     const lftOudsteM = personenGesorteerd[0] ? lftMaanden(personenGesorteerd[0], abs) : 0;
-    const spaargeld = lftOudsteM >= maandenVan(vermogen.spaargeldGebruikVanaf) ? vermogen.spaargeldPerJaar : 0;
-    const woning    = lftOudsteM >= maandenVan(vermogen.woningGebruikVanaf)    ? vermogen.woningPerJaar    : 0;
+    // fix-16: per bron aan/uit te zetten (Prognose) en de bron loopt op als het totaal is opgenomen
+    const vermogenBedrag = (mee, vanaf, perJaar, totaal) => {
+      if (mee === false || !(perJaar > 0)) return 0;
+      const start = maandenVan(vanaf);
+      if (lftOudsteM < start) return 0;
+      if (totaal > 0 && lftOudsteM >= start + Math.round(totaal / perJaar * 12)) return 0;   // totaal 0 = onbeperkt
+      return perJaar;
+    };
+    const spaargeld = vermogenBedrag(vermogen.spaargeldMee, vermogen.spaargeldGebruikVanaf, vermogen.spaargeldPerJaar, vermogen.spaargeld);
+    const woning    = vermogenBedrag(vermogen.woningMee,    vermogen.woningGebruikVanaf,    vermogen.woningPerJaar,    vermogen.woningWaarde);
     if (spaargeld > 0) { items.push({ type: "vermogen", naam: "Spaargeld inzetten", bedragJr: spaargeld, eigenaar: "", eigenaarIdx: -1, isNetto: true }); totNetto += spaargeld; }
     if (woning > 0)    { items.push({ type: "vermogen", naam: "Woning (hypotheek/verkoop)", bedragJr: woning, eigenaar: "", eigenaarIdx: -1, isNetto: true }); totNetto += woning; }
 
@@ -989,6 +998,28 @@ export default function PensioenApp() {
 
         {/* PROGNOSE */}
         {tab === "prognose" && <Section title="Inkomensprognose">
+          {/* fix-16: spaargeld en woning optioneel meenemen in de prognose */}
+          <div style={{ background: "#1a2d3d", border: "1px solid #2a4a5e", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13 }}>
+            <div style={{ fontSize: 11, color: "#7a9bb0", marginBottom: 6 }}>Meenemen in de prognose (bedragen netto, instellen bij tabblad Vermogen)</div>
+            {vermogen.spaargeldPerJaar > 0 || vermogen.woningPerJaar > 0 ? (
+              <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+                {vermogen.spaargeldPerJaar > 0 && (
+                  <label style={{ cursor: "pointer", color: "#e8dcc8" }}>
+                    <input type="checkbox" checked={vermogen.spaargeldMee !== false} onChange={e => setVermogen({ ...vermogen, spaargeldMee: e.target.checked })} style={{ accentColor: "#4caf8a", marginRight: 6 }} />
+                    💰 Spaargeld <span style={{ color: "#7a9bb0" }}>€ {vermogen.spaargeldPerJaar.toLocaleString("nl-NL")}/jr vanaf {vermogen.spaargeldGebruikVanaf}{vermogen.spaargeld > 0 ? `, tot het op is (± ${Math.round(vermogen.spaargeld / vermogen.spaargeldPerJaar)} jr)` : ""}</span>
+                  </label>
+                )}
+                {vermogen.woningPerJaar > 0 && (
+                  <label style={{ cursor: "pointer", color: "#e8dcc8" }}>
+                    <input type="checkbox" checked={vermogen.woningMee !== false} onChange={e => setVermogen({ ...vermogen, woningMee: e.target.checked })} style={{ accentColor: "#4caf8a", marginRight: 6 }} />
+                    🏠 Woning <span style={{ color: "#7a9bb0" }}>€ {vermogen.woningPerJaar.toLocaleString("nl-NL")}/jr vanaf {vermogen.woningGebruikVanaf}{vermogen.woningWaarde > 0 ? `, tot het op is (± ${Math.round(vermogen.woningWaarde / vermogen.woningPerJaar)} jr)` : ""}</span>
+                  </label>
+                )}
+              </div>
+            ) : (
+              <span style={{ color: "#7a9bb0" }}>Nog niets ingevuld. Vul bij <a href="#" onClick={e => { e.preventDefault(); setTab("vermogen"); }} style={{ color: "#c9a84c" }}>Vermogen</a> in hoeveel je per jaar uit spaargeld of woning wilt inzetten.</span>
+            )}
+          </div>
           <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
             <button onClick={() => setPrognoseView("tijdlijn")} style={{ ...btn(prognoseView === "tijdlijn" ? "#c9a84c" : "#3a5a6e"), fontWeight: prognoseView === "tijdlijn" ? 700 : 400 }}>📋 Tijdlijn</button>
             <button onClick={() => setPrognoseView("grafiek")}  style={{ ...btn(prognoseView === "grafiek"  ? "#c9a84c" : "#3a5a6e"), fontWeight: prognoseView === "grafiek"  ? 700 : 400 }}>📈 Grafiek & tabel</button>
