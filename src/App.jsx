@@ -1,4 +1,5 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-14: duidelijkere namen bij "pensioen laten ingaan" (standaardleeftijd uit polis / bij stoppen met werken / zelf op te geven leeftijd)
 // fix-13: alle blokken standaard dichtgeklapt (overzicht); klik om open te klappen
 // fix-12: header rustiger: alleen "Importeren" zichtbaar, Demo/Backup/Herstel/Help in een ⋯-menu
 // fix-11: demo-modus met realistische (fictieve) voorbeeldgegevens (src/DemoData.js).
@@ -50,7 +51,7 @@ import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { maakDemoData } from "./DemoData.js";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-13";
+const FIX_NR = "fix-14";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -218,7 +219,7 @@ function ingangsFactor(ingang, rekenLft) {
   const x = Math.min(ingang, rekenLft);
   return pvUitkering(x, rekenLft) / pvUitkering(x, ingang);
 }
-const INGANG_TEKST = { standaard: "pensioen op standaardleeftijd", stoppen: "pensioen direct bij stoppen", eigen: "pensioen op eigen leeftijd" };   // fix-9
+const INGANG_TEKST = { standaard: "pensioen op standaardleeftijd uit polis", stoppen: "pensioen bij stoppen met werken", eigen: "pensioen op zelf gekozen leeftijd" };   // fix-9
 const MIN_INGANG = 60;      // ABP: vanaf de maand waarin je 60 wordt
 const MAX_UITSTEL = 5;      // tot 5 jaar na de AOW-leeftijd
 const standAbs = (p) => { const [j, m] = (p.standPer ?? "").split("-").map(Number); return j > 0 ? j * 12 + ((m || 1) - 1) : NU_ABS; };
@@ -1425,9 +1426,9 @@ function StopScenario({ persoon, pensioenen, kleur, partnerNaam, update, titel, 
 
       <label style={lbl}>Pensioen laten ingaan</label>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-        <button style={knop(modus === "standaard")} onClick={() => update({ ingangModus: "standaard" })}>Op de standaardleeftijd</button>
-        <button style={knop(modus === "stoppen")}   onClick={() => update({ ingangModus: "stoppen" })}>Direct bij stoppen</button>
-        <button style={knop(modus === "eigen")}     onClick={() => update({ ingangModus: "eigen", ingangLeeftijd: persoon.ingangLeeftijd ?? Math.max(MIN_INGANG, stop) })}>Op een eigen leeftijd</button>
+        <button style={knop(modus === "standaard")} onClick={() => update({ ingangModus: "standaard" })}>Standaardleeftijd uit polis</button>
+        <button style={knop(modus === "stoppen")}   onClick={() => update({ ingangModus: "stoppen" })}>Bij stoppen met werken (pensioendatum)</button>
+        <button style={knop(modus === "eigen")}     onClick={() => update({ ingangModus: "eigen", ingangLeeftijd: persoon.ingangLeeftijd ?? Math.max(MIN_INGANG, stop) })}>Op zelf op te geven leeftijd</button>
       </div>
       {modus === "eigen" && (
         <LeeftijdSchuif label="Pensioen gaat in op" persoon={persoon} waarde={persoon.ingangLeeftijd ?? Math.max(MIN_INGANG, stop)} min={MIN_INGANG} max={aowLft + MAX_UITSTEL} kleur={kleur}
