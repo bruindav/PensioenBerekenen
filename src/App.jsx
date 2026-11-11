@@ -1,4 +1,5 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-13: alle blokken standaard dichtgeklapt (overzicht); klik om open te klappen
 // fix-12: header rustiger: alleen "Importeren" zichtbaar, Demo/Backup/Herstel/Help in een ⋯-menu
 // fix-11: demo-modus met realistische (fictieve) voorbeeldgegevens (src/DemoData.js).
 //         Keuzescherm bij opstarten (demo of eigen gegevens); in demo wordt niets opgeslagen
@@ -49,7 +50,7 @@ import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { maakDemoData } from "./DemoData.js";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-12";
+const FIX_NR = "fix-13";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -1075,7 +1076,7 @@ export default function PensioenApp() {
 
 // ─── TijdlijnMoment ───────────────────────────────────────────────────────────
 function TijdlijnMoment({ moment, mi, personenGesorteerd, KLEUREN }) {
-  const [open, setOpen] = useState(mi === 0);
+  const [open, setOpen] = useState(false);
   const kleur = KLEUREN[mi % KLEUREN.length];
   const { data } = moment;
 
@@ -1229,7 +1230,7 @@ function ScenarioVergelijking({ kolommen, personenGesorteerd, onToepassen, onVer
         <strong> doorwerken tot de AOW-leeftijd</strong> (allebei werken tot de AOW, pensioenen op de gewone leeftijd).
       </div>
       {kolommen.filter(k => k.id !== "door").map((k, i) => (
-        <Inklapbaar key={k.id} sub kleur={k.kleur} standaardOpen={i === 0} titel={<>📖 {k.naam}</>} samenvatting={`€ ${Math.round(k.kc.eind).toLocaleString("nl-NL")} netto/mnd als alles is ingegaan`}>
+        <Inklapbaar key={k.id} sub kleur={k.kleur} titel={<>📖 {k.naam}</>} samenvatting={`€ ${Math.round(k.kc.eind).toLocaleString("nl-NL")} netto/mnd als alles is ingegaan`}>
           <UitlegScenario k={k} ref_={kolommen[0]} personen={volgorde(k)} />
         </Inklapbaar>
       ))}
@@ -1585,7 +1586,7 @@ function ProductRij({ p, persoon, alle, setPensioenen, kleur }) {
 
 // ─── fix-6: inklapbaar blok ───────────────────────────────────────────────────
 // sub = kleiner blok binnen een ander blok (pensioenregeling, product)
-function Inklapbaar({ titel, samenvatting, kleur = "#c9a84c", standaardOpen = true, sub = false, children }) {
+function Inklapbaar({ titel, samenvatting, kleur = "#c9a84c", standaardOpen = false, sub = false, children }) {
   const [open, setOpen] = useState(standaardOpen);
   return (
     <div style={{ background: sub ? "#111d26" : "#1a2d3d", border: `1px solid ${kleur}${sub ? "33" : "44"}`, borderRadius: sub ? 10 : 12, padding: sub ? "0 14px" : "0 18px", marginBottom: sub ? 10 : 16 }}>
