@@ -1,4 +1,5 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-18: spaargeld en woning: eigen aantal jaren instelbaar (bijv. € 10.000/jr, 10 jaar, vanaf 68)
 // fix-17: scherm vult de hele breedte (geen witte rand), minder marge op smalle schermen
 // fix-16: Prognose: spaargeld en woning apart aan/uit te zetten; opname stopt als het totaal op is
 // fix-15: installeerbaar als app (manifest in public/, meta in index.html) zodat de adresbalk verdwijnt
@@ -54,7 +55,7 @@ import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { maakDemoData } from "./DemoData.js";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-17";
+const FIX_NR = "fix-18";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -380,6 +381,9 @@ function normaliseer(d) {
   }
   return { ...d, pensioenen, simulatie: { scenarios: Array.isArray(oud.scenarios) ? oud.scenarios : [] } };
 }
+// fix-17: "€ 10.000/jr vanaf 68, 10 jaar" / "…, tot het op is (± 12 jr)" / "…, onbeperkt"
+const vermogenTekst = (perJaar, vanaf, totaal, jaren) =>
+  `€ ${perJaar.toLocaleString("nl-NL")}/jr vanaf ${vanaf}` + (jaren > 0 ? `, ${jaren} jaar` : totaal > 0 ? `, tot het op is (± ${Math.round(totaal / perJaar)} jr)` : ", onbeperkt");
 const KLEUREN = ["#c9a84c", "#a084c9", "#4caf8a", "#5b9bd5", "#e07b54"];
 
 export default function PensioenApp() {
@@ -588,15 +592,17 @@ export default function PensioenApp() {
     // Vermogen: netto — geen belasting
     const lftOudsteM = personenGesorteerd[0] ? lftMaanden(personenGesorteerd[0], abs) : 0;
     // fix-16: per bron aan/uit te zetten (Prognose) en de bron loopt op als het totaal is opgenomen
-    const vermogenBedrag = (mee, vanaf, perJaar, totaal) => {
+    // fix-17: eigen aantal jaren instelbaar (bijv. 10.000 per jaar, 10 jaar, vanaf 68); leeg/0 = tot het totaal op is
+    const vermogenBedrag = (mee, vanaf, perJaar, totaal, jaren) => {
       if (mee === false || !(perJaar > 0)) return 0;
       const start = maandenVan(vanaf);
       if (lftOudsteM < start) return 0;
+      if (jaren > 0) return lftOudsteM < start + Math.round(jaren * 12) ? perJaar : 0;
       if (totaal > 0 && lftOudsteM >= start + Math.round(totaal / perJaar * 12)) return 0;   // totaal 0 = onbeperkt
       return perJaar;
     };
-    const spaargeld = vermogenBedrag(vermogen.spaargeldMee, vermogen.spaargeldGebruikVanaf, vermogen.spaargeldPerJaar, vermogen.spaargeld);
-    const woning    = vermogenBedrag(vermogen.woningMee,    vermogen.woningGebruikVanaf,    vermogen.woningPerJaar,    vermogen.woningWaarde);
+    const spaargeld = vermogenBedrag(vermogen.spaargeldMee, vermogen.spaargeldGebruikVanaf, vermogen.spaargeldPerJaar, vermogen.spaargeld, vermogen.spaargeldJaren);
+    const woning    = vermogenBedrag(vermogen.woningMee,    vermogen.woningGebruikVanaf,    vermogen.woningPerJaar,    vermogen.woningWaarde, vermogen.woningJaren);
     if (spaargeld > 0) { items.push({ type: "vermogen", naam: "Spaargeld inzetten", bedragJr: spaargeld, eigenaar: "", eigenaarIdx: -1, isNetto: true }); totNetto += spaargeld; }
     if (woning > 0)    { items.push({ type: "vermogen", naam: "Woning (hypotheek/verkoop)", bedragJr: woning, eigenaar: "", eigenaarIdx: -1, isNetto: true }); totNetto += woning; }
 
@@ -936,20 +942,28 @@ export default function PensioenApp() {
               💡 Deze bedragen zijn <strong>netto</strong> — er wordt geen belasting over berekend. Ze worden direct opgeteld bij het netto inkomen.
             </p>
           </div>
-          <Inklapbaar titel="💰 Spaargeld inzetten als inkomen" samenvatting={vermogen.spaargeldPerJaar > 0 ? `€ ${vermogen.spaargeldPerJaar.toLocaleString("nl-NL")}/jr vanaf ${vermogen.spaargeldGebruikVanaf} jaar` : "niet ingezet"}>
+          <Inklapbaar titel="💰 Spaargeld inzetten als inkomen" samenvatting={vermogen.spaargeldPerJaar > 0 ? vermogenTekst(vermogen.spaargeldPerJaar, vermogen.spaargeldGebruikVanaf, vermogen.spaargeld, vermogen.spaargeldJaren) : "niet ingezet"}>
           <Grid>
             <Field label="Totaal spaargeld (€)" value={vermogen.spaargeld} onChange={v=>setVermogen({...vermogen,spaargeld:+v})} type="number" />
             <Field label="Gebruik vanaf leeftijd oudste" value={vermogen.spaargeldGebruikVanaf} onChange={v=>setVermogen({...vermogen,spaargeldGebruikVanaf:+v})} type="number" />
             <Field label="Per jaar opnemen — netto (€)" value={vermogen.spaargeldPerJaar} onChange={v=>setVermogen({...vermogen,spaargeldPerJaar:+v})} type="number" />
+            <Field label="Aantal jaar (leeg = tot het op is)" value={vermogen.spaargeldJaren ?? 0} onChange={v=>setVermogen({...vermogen,spaargeldJaren:+v})} type="number" />
           </Grid>
+          {vermogen.spaargeldJaren > 0 && vermogen.spaargeldPerJaar > 0 && vermogen.spaargeld > 0 && vermogen.spaargeldPerJaar * vermogen.spaargeldJaren > vermogen.spaargeld && (
+            <p style={{ color: "#e07b54", fontSize: 12, marginTop: 8 }}>⚠ {vermogen.spaargeldJaren} jaar × € {vermogen.spaargeldPerJaar.toLocaleString("nl-NL")} = € {(vermogen.spaargeldJaren * vermogen.spaargeldPerJaar).toLocaleString("nl-NL")}, dat is meer dan de spaargeld aanwezig (€ {vermogen.spaargeld.toLocaleString("nl-NL")}).</p>
+          )}
           </Inklapbaar>
-          <Inklapbaar titel="🏠 Woning inzetten als inkomen" samenvatting={vermogen.woningPerJaar > 0 ? `€ ${vermogen.woningPerJaar.toLocaleString("nl-NL")}/jr vanaf ${vermogen.woningGebruikVanaf} jaar` : "niet ingezet"}>
+          <Inklapbaar titel="🏠 Woning inzetten als inkomen" samenvatting={vermogen.woningPerJaar > 0 ? vermogenTekst(vermogen.woningPerJaar, vermogen.woningGebruikVanaf, vermogen.woningWaarde, vermogen.woningJaren) : "niet ingezet"}>
           <p style={{ color: "#7a9bb0", fontSize: 12, marginBottom: 12 }}>Bijv. verzilverhypotheek of verkoop + terughuur. Vul het netto bedrag in dat vrijkomt.</p>
           <Grid>
             <Field label="Woningwaarde (€)" value={vermogen.woningWaarde} onChange={v=>setVermogen({...vermogen,woningWaarde:+v})} type="number" />
             <Field label="Gebruik vanaf leeftijd oudste" value={vermogen.woningGebruikVanaf} onChange={v=>setVermogen({...vermogen,woningGebruikVanaf:+v})} type="number" />
             <Field label="Per jaar vrijmaken — netto (€)" value={vermogen.woningPerJaar} onChange={v=>setVermogen({...vermogen,woningPerJaar:+v})} type="number" />
+            <Field label="Aantal jaar (leeg = tot het op is)" value={vermogen.woningJaren ?? 0} onChange={v=>setVermogen({...vermogen,woningJaren:+v})} type="number" />
           </Grid>
+          {vermogen.woningJaren > 0 && vermogen.woningPerJaar > 0 && vermogen.woningWaarde > 0 && vermogen.woningPerJaar * vermogen.woningJaren > vermogen.woningWaarde && (
+            <p style={{ color: "#e07b54", fontSize: 12, marginTop: 8 }}>⚠ {vermogen.woningJaren} jaar × € {vermogen.woningPerJaar.toLocaleString("nl-NL")} = € {(vermogen.woningJaren * vermogen.woningPerJaar).toLocaleString("nl-NL")}, dat is meer dan de woningwaarde (€ {vermogen.woningWaarde.toLocaleString("nl-NL")}).</p>
+          )}
           </Inklapbaar>
         </Section>}
 
@@ -1007,13 +1021,13 @@ export default function PensioenApp() {
                 {vermogen.spaargeldPerJaar > 0 && (
                   <label style={{ cursor: "pointer", color: "#e8dcc8" }}>
                     <input type="checkbox" checked={vermogen.spaargeldMee !== false} onChange={e => setVermogen({ ...vermogen, spaargeldMee: e.target.checked })} style={{ accentColor: "#4caf8a", marginRight: 6 }} />
-                    💰 Spaargeld <span style={{ color: "#7a9bb0" }}>€ {vermogen.spaargeldPerJaar.toLocaleString("nl-NL")}/jr vanaf {vermogen.spaargeldGebruikVanaf}{vermogen.spaargeld > 0 ? `, tot het op is (± ${Math.round(vermogen.spaargeld / vermogen.spaargeldPerJaar)} jr)` : ""}</span>
+                    💰 Spaargeld <span style={{ color: "#7a9bb0" }}>{vermogenTekst(vermogen.spaargeldPerJaar, vermogen.spaargeldGebruikVanaf, vermogen.spaargeld, vermogen.spaargeldJaren)}</span>
                   </label>
                 )}
                 {vermogen.woningPerJaar > 0 && (
                   <label style={{ cursor: "pointer", color: "#e8dcc8" }}>
                     <input type="checkbox" checked={vermogen.woningMee !== false} onChange={e => setVermogen({ ...vermogen, woningMee: e.target.checked })} style={{ accentColor: "#4caf8a", marginRight: 6 }} />
-                    🏠 Woning <span style={{ color: "#7a9bb0" }}>€ {vermogen.woningPerJaar.toLocaleString("nl-NL")}/jr vanaf {vermogen.woningGebruikVanaf}{vermogen.woningWaarde > 0 ? `, tot het op is (± ${Math.round(vermogen.woningWaarde / vermogen.woningPerJaar)} jr)` : ""}</span>
+                    🏠 Woning <span style={{ color: "#7a9bb0" }}>{vermogenTekst(vermogen.woningPerJaar, vermogen.woningGebruikVanaf, vermogen.woningWaarde, vermogen.woningJaren)}</span>
                   </label>
                 )}
               </div>
