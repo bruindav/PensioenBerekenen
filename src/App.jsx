@@ -1,4 +1,7 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-11: demo-modus met realistische (fictieve) voorbeeldgegevens (src/DemoData.js).
+//         Keuzescherm bij opstarten (demo of eigen gegevens); in demo wordt niets opgeslagen
+//         en blijven je eigen gegevens in IndexedDB ongemoeid. Versienummer ook op het startscherm.
 // fix-10: vergelijking uitgelegd in gewone woorden: per scenario een korte uitleg
 //         ("Wat betekent dit?") en een uitleg per regel van de tabel
 // fix-9: tabblad Simulatie omgebouwd tot "scenario's":
@@ -42,9 +45,10 @@
 
 import { useState, useMemo, useEffect } from "react";
 import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
+import { maakDemoData } from "./DemoData.js";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-10";
+const FIX_NR = "fix-11";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
@@ -378,6 +382,8 @@ export default function PensioenApp() {
   const [opgeslagen, setOpgeslagen]     = useState(null);
   const [importStatus, setImportStatus] = useState(null);
   const [prognoseView, setPrognoseView] = useState("tijdlijn");
+  // fix-11: null = nog kiezen (startscherm) · "eigen" = eigen gegevens (opgeslagen) · "demo" = voorbeeld (niet opgeslagen)
+  const [modus, setModus] = useState(null);
 
   // Info-pagina's (fix-4): gekoppeld aan #help / #privacy / #disclaimer
   const INFO = ["help", "privacy", "disclaimer"];
@@ -410,11 +416,30 @@ export default function PensioenApp() {
           if (saved.pensioenen) setPensioenenRaw(saved.pensioenen);
           if (saved.vermogen)   setVermogenRaw(saved.vermogen);
           if (saved.simulatie)  setSimulatieRaw(saved.simulatie);
+          if (saved.personen?.length) setModus("eigen");               // fix-11: eigen gegevens aanwezig → direct openen
         }
       } catch (e) { console.warn(e); }
       setGeladen(true);
     })();
   }, []);
+
+  // fix-11: demo starten (in het geheugen, zonder iets op te slaan) en weer verlaten
+  function startDemo() {
+    const d = maakDemoData();
+    setPersonenRaw(d.personen); setPensioenenRaw(d.pensioenen); setVermogenRaw(d.vermogen); setSimulatieRaw(d.simulatie);
+    setImportStatus(null); setTab("profiel"); setModus("demo");
+    window.scrollTo(0, 0);
+  }
+  async function stopDemo() {
+    let saved = null;
+    try { const raw = await dbGet("state"); saved = raw ? normaliseer(raw) : null; } catch (e) { console.warn(e); }
+    setPersonenRaw(saved?.personen ?? DEFAULT.personen);
+    setPensioenenRaw(saved?.pensioenen ?? DEFAULT.pensioenen);
+    setVermogenRaw(saved?.vermogen ?? DEFAULT.vermogen);
+    setSimulatieRaw(saved?.simulatie ?? DEFAULT.simulatie);
+    setImportStatus(null); setTab("profiel");
+    setModus(saved?.personen?.length ? "eigen" : null);               // geen eigen gegevens → terug naar het startscherm
+  }
 
   // fix-8: opslaan gebeurt nu op één plek, ná elke wijziging, met de actuele state.
   // Voorheen sloeg elke setter direct op met de (verouderde) waarden van de andere
@@ -425,11 +450,11 @@ export default function PensioenApp() {
   const setVermogen   = setVermogenRaw;
   const setSimulatie  = setSimulatieRaw;
   useEffect(() => {
-    if (!geladen) return;                       // niet de opgeslagen data overschrijven tijdens het laden
+    if (!geladen || modus !== "eigen") return;  // niet overschrijven tijdens laden; in demo/startscherm nooit opslaan (fix-11)
     dbSet("state", { personen, pensioenen, vermogen, simulatie })
       .then(() => setOpgeslagen(new Date()))
       .catch(e => console.warn(e));
-  }, [geladen, personen, pensioenen, vermogen, simulatie]);
+  }, [geladen, modus, personen, pensioenen, vermogen, simulatie]);
 
   function importeerBestand(e) {
     const file = e.target.files[0]; if (!file) return; e.target.value = "";
@@ -694,8 +719,35 @@ export default function PensioenApp() {
 
   if (!geladen) return <div style={{ background: "#0f1923", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#c9a84c", fontFamily: "Georgia,serif", fontSize: 18 }}>Gegevens laden...</div>;
 
+  // fix-11: startscherm — kies demo of begin met eigen gegevens
+  if (modus === null) return (
+    <div style={{ fontFamily: "'Georgia',serif", background: "#0f1923", minHeight: "100vh", color: "#e8dcc8", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ maxWidth: 560, width: "100%", textAlign: "center" }}>
+        <div style={{ fontSize: 44, marginBottom: 8 }}>🏦</div>
+        <h1 style={{ margin: 0, fontSize: 28, color: "#c9a84c" }}>Pensioen Planner <span style={{ fontSize: 12, color: "#555", fontWeight: 400 }}>{FIX_NR}</span></h1>
+        <p style={{ color: "#7a9bb0", fontSize: 14, margin: "10px 0 28px" }}>Zie wat je netto inkomen wordt na je pensioen — en wat eerder stoppen met werken doet. Alle gegevens blijven op jouw apparaat.</p>
+        <div style={{ display: "grid", gap: 14 }}>
+          <button onClick={startDemo} style={{ padding: "18px 20px", background: "#1a2d3d", border: "1px solid #c9a84c", borderRadius: 12, color: "#e8dcc8", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+            <div style={{ fontSize: 17, fontWeight: 700, color: "#c9a84c" }}>🎭 Demo bekijken</div>
+            <div style={{ fontSize: 12, color: "#7a9bb0", marginTop: 4 }}>Voorbeeldgegevens van een fictief stel met pensioen bij meerdere uitvoerders, banksparen, spaargeld en een bewaard scenario. Er wordt niets opgeslagen.</div>
+          </button>
+          <button onClick={() => setModus("eigen")} style={{ padding: "18px 20px", background: "#1a2d3d", border: "1px solid #2a4a5e", borderRadius: 12, color: "#e8dcc8", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+            <div style={{ fontSize: 17, fontWeight: 700, color: "#5b9bd5" }}>📥 Geen demo — met mijn eigen gegevens beginnen</div>
+            <div style={{ fontSize: 12, color: "#7a9bb0", marginTop: 4 }}>Importeer je overzicht van mijnpensioenoverzicht.nl (JSON of XML). Opgeslagen in je eigen browser.</div>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div style={{ fontFamily: "'Georgia',serif", background: "#0f1923", minHeight: "100vh", color: "#e8dcc8" }}>
+      {modus === "demo" && (
+        <div style={{ background: "#3d3317", borderBottom: "1px solid #c9a84c88", padding: "8px 24px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <span style={{ color: "#c9a84c", fontSize: 13 }}>🎭 <strong>Demo</strong> — fictieve voorbeeldgegevens. Wijzigingen worden niet opgeslagen; je eigen gegevens blijven ongemoeid.</span>
+          <button onClick={stopDemo} style={btn("#c9a84c")}>Demo afsluiten</button>
+        </div>
+      )}
       <div style={{ background: "linear-gradient(135deg,#1a2d3d,#0f1923)", borderBottom: "1px solid #2a4a5e", padding: "16px 24px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: "#c9a84c" }}>🏦 Pensioen Planner <span style={{ fontSize: 11, color: "#555", fontWeight: 400 }}>{FIX_NR}</span></h1>
@@ -704,6 +756,7 @@ export default function PensioenApp() {
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           {opgeslagen && <span style={{ fontSize: 11, color: "#4caf8a" }}>✓ {opgeslagen.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}</span>}
           <label style={{ ...btn("#5b9bd5"), cursor: "pointer" }}>📥 Pensioen importeren<input type="file" accept=".json,.xml" onChange={importeerBestand} style={{ display: "none" }} /></label>
+          {modus === "eigen" && <button onClick={startDemo} style={btn("#a084c9")}>🎭 Demo</button>}
           <button onClick={exporteer} style={btn("#c9a84c")}>⬇ Backup</button>
           <button onClick={() => naarInfo("help")} style={btn("#4caf8a")}>❓ Help</button>
           <label style={{ ...btn("#7a9bb0"), cursor: "pointer" }}>⬆ Herstel<input type="file" accept=".json" onChange={importeerBackup} style={{ display: "none" }} /></label>
