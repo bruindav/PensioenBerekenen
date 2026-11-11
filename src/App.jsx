@@ -1,4 +1,5 @@
 // PENSIOEN PLANNER - src/App.jsx
+// fix-15: installeerbaar als app (manifest in public/, meta in index.html) zodat de adresbalk verdwijnt
 // fix-14: duidelijkere namen bij "pensioen laten ingaan" (standaardleeftijd uit polis / bij stoppen met werken / zelf op te geven leeftijd)
 // fix-13: alle blokken standaard dichtgeklapt (overzicht); klik om open te klappen
 // fix-12: header rustiger: alleen "Importeren" zichtbaar, Demo/Backup/Herstel/Help in een ⋯-menu
@@ -51,7 +52,7 @@ import { HelpPagina, PrivacyPagina, DisclaimerPagina } from "./InfoPaginas.jsx";
 import { maakDemoData } from "./DemoData.js";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from "recharts";
 
-const FIX_NR = "fix-14";
+const FIX_NR = "fix-15";
 
 // ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = "pensioenPlanner";
